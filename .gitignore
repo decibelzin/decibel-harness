@@ -1,0 +1,25 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node / frontend (added with the Tauri app)
+node_modules/
+dist/
+.vite/
+
+# Tauri build output
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+
+# Local secrets / env — never commit the OpenRouter key or any credential
+.env
+.env.*
+*.key
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
