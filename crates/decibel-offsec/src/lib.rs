@@ -13,6 +13,8 @@
 pub mod findings;
 pub mod fs;
 pub mod http;
+pub mod nmap;
+pub mod proc;
 pub mod search;
 pub mod shell;
 pub mod util;
@@ -24,17 +26,19 @@ use decibel_tools::ToolRegistry;
 pub use findings::{AddFindingTool, Finding, FindingStore};
 pub use fs::{ReadFileTool, StrReplaceTool, WriteFileTool};
 pub use http::HttpTool;
+pub use nmap::NmapTool;
 pub use search::{GlobTool, GrepTool};
 pub use shell::ShellTool;
 
 /// Register the complete offensive toolkit into `registry` and return the
 /// shared finding store the tools record into.
 ///
-/// Tools installed: `shell`, `http`, `read_file`, `write_file`, `str_replace`,
-/// `glob`, `grep`, `add_finding`.
+/// Tools installed: `shell`, `nmap`, `http`, `read_file`, `write_file`,
+/// `str_replace`, `glob`, `grep`, `add_finding`.
 pub fn register_all(registry: &mut ToolRegistry) -> FindingStore {
     let findings = FindingStore::new();
     registry.register(Arc::new(ShellTool));
+    registry.register(Arc::new(NmapTool));
     registry.register(Arc::new(HttpTool));
     registry.register(Arc::new(ReadFileTool));
     registry.register(Arc::new(WriteFileTool));
@@ -55,10 +59,11 @@ mod tests {
         let _findings = register_all(&mut registry);
         let names: Vec<String> = registry.schemas().into_iter().map(|s| s.name).collect();
         for expected in [
-            "shell", "http", "read_file", "write_file", "str_replace", "glob", "grep", "add_finding",
+            "shell", "nmap", "http", "read_file", "write_file", "str_replace", "glob", "grep",
+            "add_finding",
         ] {
             assert!(names.contains(&expected.to_string()), "missing tool {expected}");
         }
-        assert_eq!(names.len(), 8);
+        assert_eq!(names.len(), 9);
     }
 }
