@@ -1,7 +1,7 @@
 import { createSignal, For, onMount, Show, type JSX } from 'solid-js'
 
 import './App.css'
-import { deleteApiKey, hasApiKey, saveApiKey, type ModelInfo } from './api'
+import { deleteApiKey, hasApiKey, isTauri, saveApiKey, type ModelInfo } from './api'
 import {
   cancel,
   conversation,
@@ -112,23 +112,35 @@ function Settings() {
   const [key, setKey] = createSignal('')
   const [stored, setStored] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
-  hasApiKey().then(setStored)
+  const [error, setError] = createSignal<string | undefined>()
+  const [saved, setSaved] = createSignal(false)
+  void hasApiKey().then(setStored).catch(() => {})
   const save = async () => {
-    if (!key().trim()) return
+    const k = key().trim()
+    if (!k) return
     setBusy(true)
+    setError(undefined)
+    setSaved(false)
     try {
-      await saveApiKey(key().trim())
+      await saveApiKey(k)
       setKey('')
       setStored(await hasApiKey())
+      setSaved(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
   }
   const clear = async () => {
     setBusy(true)
+    setError(undefined)
+    setSaved(false)
     try {
       await deleteApiKey()
       setStored(await hasApiKey())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
     }
@@ -146,6 +158,12 @@ function Settings() {
             Stored in your OS keyring, never in a file. Get a free key at{' '}
             <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
           </div>
+          <Show when={!isTauri()}>
+            <div class="key-status" style={{ color: 'var(--warning)' }}>
+              <span class="kd" style={{ background: 'var(--warning)' }} />
+              Running in browser preview — the keyring only works in the desktop app (npm run app).
+            </div>
+          </Show>
           <div class="field-row">
             <input
               type="password"
@@ -154,11 +172,24 @@ function Settings() {
               onInput={(e) => setKey(e.currentTarget.value)}
               onKeyDown={(e) => e.key === 'Enter' && save()}
             />
-            <button class="btn primary" disabled={busy() || !key().trim()} onClick={save}>Save</button>
+            <button class="btn primary" disabled={busy() || !key().trim()} onClick={save}>
+              {busy() ? 'Saving…' : 'Save'}
+            </button>
             <Show when={stored()}>
               <button class="btn danger" disabled={busy()} onClick={clear}>Clear</button>
             </Show>
           </div>
+          <Show when={error()}>
+            {(e) => (
+              <div class="key-status" style={{ color: 'var(--danger)' }}>
+                <span class="kd" style={{ background: 'var(--danger)' }} />
+                Failed: {e()}
+              </div>
+            )}
+          </Show>
+          <Show when={saved() && !error()}>
+            <div class="key-status set"><span class="kd" />Key saved to the keyring.</div>
+          </Show>
           <div class={`key-status ${stored() ? 'set' : ''}`}>
             <span class="kd" />
             {stored() ? 'A key is stored in the keyring.' : 'No key set — the agent cannot run until you add one.'}

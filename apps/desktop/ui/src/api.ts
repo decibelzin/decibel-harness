@@ -23,7 +23,8 @@ export type RunEvent =
   | { type: 'error'; message: string }
 
 export function isTauri(): boolean {
-  return typeof (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined'
+  const w = window as unknown as { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown }
+  return typeof w.__TAURI_INTERNALS__ !== 'undefined' || typeof w.__TAURI__ !== 'undefined'
 }
 
 function parseModel(entry: any): ModelInfo {
