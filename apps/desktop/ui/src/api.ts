@@ -62,17 +62,25 @@ export async function deleteApiKey(): Promise<void> {
   if (isTauri()) await invoke('delete_api_key')
 }
 
-/** Run one prompt, streaming events. Real in Tauri, mocked in browser preview. */
+/** Run one prompt, streaming events. Real in Tauri, mocked in browser preview.
+ * `runId` tags this run so a Stop/New-session can cancel exactly it on the
+ * backend and stale events can be filtered out on the frontend. */
 export async function runPrompt(
   prompt: string,
   model: string,
+  runId: number,
   onEvent: (e: RunEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   if (isTauri()) {
     const channel = new Channel<RunEvent>()
     channel.onmessage = onEvent
-    await invoke('run_prompt', { prompt, model, onEvent: channel })
+    // Bridge the AbortSignal to a real backend cancel — invoke() itself is not
+    // abortable, so abort must reach the Rust turn through a command.
+    signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
+      once: true,
+    })
+    await invoke('run_prompt', { prompt, model, runId, onEvent: channel })
     return
   }
   await mockRun(prompt, model, onEvent, signal)

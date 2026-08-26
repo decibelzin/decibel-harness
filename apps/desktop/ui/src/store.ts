@@ -66,6 +66,11 @@ export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ li
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
 let controller: AbortController | undefined
+// Each run gets a monotonic id; only the active run's events are applied, so a
+// cancelled or superseded run can never write into the transcript or clobber
+// running-state (its backend is also cancelled via the AbortSignal → cancel_run).
+let nextRunId = 1
+let activeRunId = 0
 
 export function newSession(): void {
   cancel()
@@ -82,18 +87,25 @@ export async function send(text: string): Promise<void> {
   setConversation('list', (l) => [...l, { role: 'assistant', blocks: [] }])
   const idx = conversation.list.length - 1
 
+  const runId = nextRunId++
+  activeRunId = runId
   setRunning(true)
   controller = new AbortController()
-  await runPrompt(prompt, model, (e) => applyEvent(idx, e), controller.signal)
+  await runPrompt(prompt, model, runId, (e) => applyEvent(idx, runId, e), controller.signal)
 }
 
 export function cancel(): void {
+  // Drop the active run first so any late events from it are ignored, then abort
+  // (which reaches the backend via the api's cancel_run bridge).
+  activeRunId = 0
   controller?.abort()
   controller = undefined
   setRunning(false)
 }
 
-function applyEvent(idx: number, e: import('./api').RunEvent): void {
+function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): void {
+  // Ignore events from a run that was cancelled or superseded by a newer one.
+  if (runId !== activeRunId) return
   setConversation(
     'list',
     idx,

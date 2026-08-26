@@ -5,10 +5,13 @@
 //! Rust harness: a live model catalog, an API key stored in the OS keyring, and
 //! a streaming agent run driven by the offensive toolkit.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
+use tauri::{Manager, State};
 
 use decibel_agent::{run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
 use decibel_core::Session;
@@ -30,6 +33,12 @@ tools to inspect the target. Record confirmed weaknesses with add_finding (inclu
 technique id). Be concise and act; do not ask for permission you already have.";
 
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Live cancellation tokens for in-flight runs, keyed by the frontend's run id.
+/// A run registers its token here so `cancel_run` can stop it; the browser's
+/// AbortSignal alone cannot reach the backend.
+#[derive(Default)]
+struct RunRegistry(Mutex<HashMap<u64, TurnSignal>>);
 
 /// One model as the picker needs it (matches the frontend `ModelInfo`).
 #[derive(Serialize, Clone)]
@@ -119,10 +128,29 @@ fn delete_api_key() -> Result<(), String> {
     }
 }
 
-/// Run one prompt with the full offensive toolkit, streaming events to the
-/// frontend through `on_event`. Errors are delivered as an `error` event.
+/// Cancel the in-flight run with `run_id`, if it is still live. Called from the
+/// frontend when the user hits Stop or starts a new session.
 #[tauri::command]
-async fn run_prompt(prompt: String, model: String, on_event: Channel<RunEvt>) -> Result<(), String> {
+fn cancel_run(run_id: u64, runs: State<'_, RunRegistry>) {
+    if let Ok(map) = runs.0.lock() {
+        if let Some(token) = map.get(&run_id) {
+            token.cancel();
+        }
+    }
+}
+
+/// Run one prompt with the full offensive toolkit, streaming events to the
+/// frontend through `on_event`. Errors are delivered as an `error` event. The
+/// run registers a cancellation token under `run_id` so `cancel_run` can stop
+/// it cooperatively.
+#[tauri::command]
+async fn run_prompt(
+    prompt: String,
+    model: String,
+    run_id: u64,
+    on_event: Channel<RunEvt>,
+    runs: State<'_, RunRegistry>,
+) -> Result<(), String> {
     let key = match resolve_key() {
         Ok(k) => k,
         Err(e) => {
@@ -136,6 +164,13 @@ async fn run_prompt(prompt: String, model: String, on_event: Channel<RunEvt>) ->
     let mut registry = ToolRegistry::new();
     let _findings = register_all(&mut registry);
 
+    // Register this run's cancellation token so cancel_run can reach it. The
+    // guard is dropped immediately — never held across the await below.
+    let cancel = TurnSignal::new();
+    if let Ok(mut map) = runs.0.lock() {
+        map.insert(run_id, cancel.clone());
+    }
+
     let n = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let mut session = Session::new(format!("ui-{n}"));
     let config = AgentConfig::new("openrouter", &model).with_system(SYSTEM).with_max_tokens(1200);
@@ -148,7 +183,7 @@ async fn run_prompt(prompt: String, model: String, on_event: Channel<RunEvt>) ->
         &registry,
         &config,
         message,
-        TurnSignal::new(),
+        cancel,
         &mut |event| {
             let evt = match event {
                 Progress::Step(n) => RunEvt::Step { n },
@@ -167,13 +202,14 @@ async fn run_prompt(prompt: String, model: String, on_event: Channel<RunEvt>) ->
     )
     .await;
 
-    match outcome.stop_reason {
-        StopReason::Error(failure) => {
-            let _ = on_event.send(RunEvt::Error {
-                message: format!("[{}] {}", failure.code, failure.message),
-            });
-        }
-        _ => {}
+    if let Ok(mut map) = runs.0.lock() {
+        map.remove(&run_id);
+    }
+
+    if let StopReason::Error(failure) = outcome.stop_reason {
+        let _ = on_event.send(RunEvt::Error {
+            message: format!("[{}] {}", failure.code, failure.message),
+        });
     }
     let _ = on_event.send(RunEvt::Done);
     Ok(())
@@ -181,12 +217,17 @@ async fn run_prompt(prompt: String, model: String, on_event: Channel<RunEvt>) ->
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            app.manage(RunRegistry::default());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_models,
             has_api_key,
             save_api_key,
             delete_api_key,
-            run_prompt
+            run_prompt,
+            cancel_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running Decibel");
