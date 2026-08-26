@@ -98,6 +98,17 @@ async fn main() {
         .await;
 
         if let StopReason::Error(failure) = &outcome.stop_reason {
+            // An account-wide daily cap is shared by every free model, so cycling
+            // is pointless — stop and show the actionable message.
+            let daily_capped = failure.message.contains("per-day")
+                || failure.message.contains("free-models-per-day");
+            if daily_capped {
+                eprintln!(
+                    "\n  Free daily quota exhausted for this key: {}\n  → wait for the daily reset, or add ~$10 of credit at https://openrouter.ai/credits\n    (that unlocks 1000 free-model requests/day; :free models still cost nothing per request).",
+                    failure.message
+                );
+                std::process::exit(1);
+            }
             let skippable = matches!(failure.status, Some(403) | Some(429))
                 || matches!(failure.code.as_str(), "RATE_LIMIT" | "TIMEOUT" | "PROVIDER_ERROR")
                 || failure.message.contains("agentic harnesses");
