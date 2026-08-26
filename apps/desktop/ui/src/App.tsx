@@ -11,6 +11,7 @@ import {
   loadingModels,
   loadModels,
   modelById,
+  models,
   modelsError,
   newSession,
   running,
@@ -193,7 +194,22 @@ function ModelPanel(props: { onClose: () => void }) {
           <button class="refresh" onClick={() => loadModels()}>{loadingModels() ? '…' : '↻'}</button>
         </div>
         <div class="model-count">
-          <Show when={modelsError()} fallback={`${visibleModels().length} model(s)`}>
+          <Show
+            when={modelsError()}
+            fallback={
+              <>
+                Showing {visibleModels().length} of {models().length} models
+                <Show when={freeOnly() || toolsOnly()}>
+                  <span style={{ color: 'var(--text-faint)' }}>
+                    {' · uncheck '}
+                    {freeOnly() && toolsOnly() ? 'free / tools' : freeOnly() ? 'free' : 'tools'}
+                    {' for more'}
+                    {freeOnly() ? ' (paid models need credit)' : ''}
+                  </span>
+                </Show>
+              </>
+            }
+          >
             {(err) => <span style={{ color: 'var(--danger)' }}>catalog error: {err()}</span>}
           </Show>
         </div>
