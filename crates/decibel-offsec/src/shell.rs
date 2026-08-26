@@ -26,11 +26,20 @@ const MAX_STREAM_BYTES: usize = 60_000;
 pub struct ShellTool;
 
 /// Whether an environment variable name looks like a secret to withhold.
+///
+/// Substring match on the uppercased name. `PWD` catches MySQL's documented
+/// `MYSQL_PWD` (and, harmlessly, `PWD`/`OLDPWD` — cosmetic, since the child's
+/// cwd is set via `current_dir`); `AUTH`/`SESSION`/`BEARER` catch bearer and
+/// session credentials; `URL` catches connection strings that embed
+/// credentials (`postgres://user:pass@host`).
 fn is_secret_env(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    ["KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL"]
-        .iter()
-        .any(|needle| upper.contains(needle))
+    [
+        "KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "PWD", "CREDENTIAL", "AUTH", "SESSION",
+        "BEARER", "PRIVATE", "URL",
+    ]
+    .iter()
+    .any(|needle| upper.contains(needle))
 }
 
 /// Build the platform shell invocation for one command line.
@@ -89,18 +98,27 @@ impl Tool for ShellTool {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true); // dropping the child on timeout/cancel kills it
+            .kill_on_drop(true); // backstop: dropping the child kills the wrapper
+        // Put the shell in its own process group so a whole-tree kill (below)
+        // reaches every child it launched — `kill_on_drop` alone kills only the
+        // wrapper, orphaning the actual tool (nmap, sqlmap, …).
+        #[cfg(unix)]
+        cmd.process_group(0);
         if let Some(dir) = &workdir {
             cmd.current_dir(dir);
         }
 
         let child = cmd.spawn().map_err(|e| ToolError::execution(format!("failed to spawn shell: {e}")))?;
+        // Capture the pid before the child is moved into the output future, so
+        // a timeout/cancel can kill the whole process tree, not just the wrapper.
+        let pid = child.id();
         let output_fut = child.wait_with_output();
 
-        // Race the process against cancellation and the timeout. On either, the
-        // future is dropped and `kill_on_drop` terminates the child.
         let raced = tokio::select! {
-            _ = ctx.token().cancelled() => return Err(ToolError::Aborted),
+            _ = ctx.token().cancelled() => {
+                kill_tree(pid);
+                return Err(ToolError::Aborted);
+            }
             r = tokio::time::timeout(timeout, output_fut) => r,
         };
 
@@ -116,7 +134,12 @@ impl Tool for ShellTool {
                 )
             }
             Ok(Err(e)) => return Err(ToolError::execution(format!("shell I/O error: {e}"))),
-            Err(_elapsed) => (None, None, String::new(), String::new(), true),
+            Err(_elapsed) => {
+                // The wrapper dies via kill_on_drop when `output_fut` is dropped;
+                // kill the rest of the tree so no launched tool survives.
+                kill_tree(pid);
+                (None, None, String::new(), String::new(), true)
+            }
         };
 
         let (out_text, out_cut) = truncate_bytes(&stdout, MAX_STREAM_BYTES);
@@ -172,6 +195,35 @@ impl Tool for ShellTool {
     }
 }
 
+/// Kill the process tree rooted at `pid`, not just the shell wrapper.
+///
+/// On Windows the shell is `cmd /C <tool>`, and `cmd.exe` spawns the tool as a
+/// separate child, so `taskkill /T /F` walks the tree. On Unix the shell was
+/// spawned in its own process group ([`process_group(0)`]), so `kill(-pid, …)`
+/// signals the whole group. Best-effort: a failure to reap one process is not
+/// worth failing the tool call over.
+#[cfg(windows)]
+fn kill_tree(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Unix: signal the shell's whole process group (negative pid).
+#[cfg(unix)]
+fn kill_tree(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        // SAFETY: `kill` is async-signal-safe and takes plain integers; a
+        // negative pid targets the process group, which the child leads.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+}
+
 /// Render a terminating signal name on Unix; `None` on Windows or a clean exit.
 #[cfg(unix)]
 fn exit_signal(status: &std::process::ExitStatus) -> Option<String> {
@@ -195,8 +247,14 @@ mod tests {
         assert!(is_secret_env("aws_secret_access_key"));
         assert!(is_secret_env("GITHUB_TOKEN"));
         assert!(is_secret_env("DB_PASSWORD"));
+        // Names that contain none of the classic needles but still hold secrets.
+        assert!(is_secret_env("MYSQL_PWD"));
+        assert!(is_secret_env("GITHUB_AUTH"));
+        assert!(is_secret_env("DATABASE_URL"));
+        assert!(is_secret_env("AWS_SESSION_TOKEN"));
         assert!(!is_secret_env("PATH"));
         assert!(!is_secret_env("HOME"));
+        assert!(!is_secret_env("LANG"));
     }
 
     #[tokio::test]

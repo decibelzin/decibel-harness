@@ -23,8 +23,14 @@ walkdir = "2"
 globset = "0.4"
 regex = "1"
 
+[target.'cfg(unix)'.dependencies]
+# Kill the whole process group on timeout/cancel so a launched tool (nmap, etc.)
+# does not orphan past the shell wrapper.
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio-util = "0.7"
 tempfile = "3"
 # The live red-team demo wires the toolkit into the agent loop and OpenRouter.
 decibel-agent = { path = "../decibel-agent" }

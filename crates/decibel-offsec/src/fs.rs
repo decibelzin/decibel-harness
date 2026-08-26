@@ -106,7 +106,7 @@ impl Tool for WriteFileTool {
         }
     }
 
-    async fn execute(&self, arguments: Value, _ctx: &ExecCtx) -> Result<Value, ToolError> {
+    async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
         let path = arg_str(&arguments, "path")?;
         // content may legitimately be empty, so read it directly rather than via arg_str.
         let content = arguments
@@ -114,6 +114,11 @@ impl Tool for WriteFileTool {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::invalid_args("missing required string `content`"))?;
 
+        // Observe cancellation before the irreversible write, so a cancelled
+        // turn does not leave a modified file while the result reports Aborted.
+        if ctx.is_cancelled() {
+            return Err(ToolError::Aborted);
+        }
         if let Some(parent) = std::path::Path::new(&path).parent() {
             if !parent.as_os_str().is_empty() {
                 tokio::fs::create_dir_all(parent)
@@ -162,7 +167,7 @@ impl Tool for StrReplaceTool {
         }
     }
 
-    async fn execute(&self, arguments: Value, _ctx: &ExecCtx) -> Result<Value, ToolError> {
+    async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
         let path = arg_str(&arguments, "path")?;
         let old_str = arg_str(&arguments, "old_str")?;
         let new_str = arguments
@@ -181,6 +186,10 @@ impl Tool for StrReplaceTool {
             return Err(ToolError::execution(format!(
                 "`old_str` appears {matches} times in {path}; it must be unique — include more context"
             )));
+        }
+        // Observe cancellation before the irreversible write (same reason as write_file).
+        if ctx.is_cancelled() {
+            return Err(ToolError::Aborted);
         }
         let updated = content.replacen(&old_str, new_str, 1);
         tokio::fs::write(&path, &updated)
@@ -238,6 +247,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r3["content"], "LINE 1\nline two\n");
+    }
+
+    #[tokio::test]
+    async fn cancelled_write_does_not_touch_disk() {
+        use tokio_util::sync::CancellationToken;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("guard.txt");
+        let path_str = path.to_str().unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+        let ctx = ExecCtx::with_token(token);
+
+        let err = WriteFileTool
+            .execute(json!({ "path": path_str, "content": "should not land" }), &ctx)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "ABORTED");
+        assert!(!path.exists(), "a cancelled write must not create the file");
     }
 
     #[tokio::test]

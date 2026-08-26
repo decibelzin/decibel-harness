@@ -166,6 +166,15 @@ impl Tool for GrepTool {
                 if re.is_match(line) {
                     if total >= cap {
                         truncated = true;
+                        // Flush the matches already found in THIS file before
+                        // breaking, so they are not lost and `total` stays
+                        // consistent with the returned groups.
+                        if !lines.is_empty() {
+                            groups.push(json!({
+                                "path": entry.path().to_string_lossy(),
+                                "matches": std::mem::take(&mut lines),
+                            }));
+                        }
                         break 'walk;
                     }
                     lines.push(json!({ "line": i + 1, "text": line }));
@@ -234,6 +243,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(value["total"], 2);
+    }
+
+    #[tokio::test]
+    async fn grep_flushes_in_progress_file_when_cap_hits_mid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("m.txt"), "hit one\nhit two\n").await.unwrap();
+        let value = GrepTool
+            .execute(
+                json!({ "pattern": "hit", "root": dir.path().to_str().unwrap(), "max_results": 1 }),
+                &ExecCtx::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(value["total"], 1);
+        assert_eq!(value["truncated"], true);
+        // The one within-cap match must survive, not be dropped when the cap trips.
+        assert_eq!(value["files"].as_array().unwrap().len(), 1);
+        assert_eq!(value["files"][0]["matches"][0]["text"], "hit one");
     }
 
     #[tokio::test]

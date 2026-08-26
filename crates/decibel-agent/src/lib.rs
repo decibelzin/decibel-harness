@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 use decibel_core::{EventKind, Session, SurfaceIntent, TurnEndReason};
 use decibel_llm::{
     BlockAssembler, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, LlmFailure, Message,
+    TokenUsage,
 };
 use decibel_tools::{ExecCtx, ToolCall, ToolRegistry};
 
@@ -151,7 +152,7 @@ pub async fn run_turn(
                 &config.provider,
                 &config.model,
             );
-            record_assistant(session, turn, step, message, &chunk_seqs);
+            record_assistant(session, turn, step, message, assembler.usage(), &chunk_seqs);
             let _ = session.append_log(EventKind::StepEnd { turn, step });
             let _ = session.append_log(EventKind::TurnEnd {
                 turn,
@@ -179,7 +180,7 @@ pub async fn run_turn(
         if !text.is_empty() {
             final_text = text;
         }
-        record_assistant(session, turn, step, message.clone(), &chunk_seqs);
+        record_assistant(session, turn, step, message.clone(), assembler.usage(), &chunk_seqs);
 
         // Collect the tool calls the model requested.
         let calls = tool_calls_of(&message);
@@ -240,11 +241,18 @@ pub async fn run_turn(
     }
 }
 
-/// Commit one assistant message, skipping the surface node when it has no
-/// derivable content (an empty message would just be dropped by derivation).
-fn record_assistant(session: &mut Session, turn: u64, step: u64, message: Message, chunk_seqs: &[u64]) {
+/// Commit one assistant message with the provider-reported token usage (when
+/// any), preserving the accounting on the durable log rather than dropping it.
+fn record_assistant(
+    session: &mut Session,
+    turn: u64,
+    step: u64,
+    message: Message,
+    usage: Option<TokenUsage>,
+    chunk_seqs: &[u64],
+) {
     let _ = session.append_surface(
-        EventKind::AssistantMessage { turn, step, message, usage: None },
+        EventKind::AssistantMessage { turn, step, message, usage },
         SurfaceIntent::append(chunk_seqs.to_vec()),
     );
 }
