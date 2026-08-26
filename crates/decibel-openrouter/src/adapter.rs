@@ -5,11 +5,14 @@
 //! outcome — success, HTTP error, transport failure — leaves the stream as a
 //! single terminal `Finish` chunk; the stream itself never yields an `Err`.
 
+use std::time::Duration;
+
 use async_stream::stream;
 use eventsource_stream::Eventsource;
 use futures_util::Stream;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
+use tokio::time::timeout;
 
 use decibel_llm::{
     ChunkStream, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, LlmFailure, Message,
@@ -25,6 +28,13 @@ const TEXT_INDEX: u32 = 1;
 /// Base offset for tool-call block indices (provider tool-call index is added).
 const TOOL_CALL_BASE: u32 = 2;
 
+/// How long to wait for the response headers before giving up on a model.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long to wait between stream chunks before treating the model as hung.
+/// A free model that accepts the connection but never sends a terminal finish
+/// would otherwise block the whole loop forever.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The OpenRouter adapter. Holds the HTTP client, endpoint, and optional key.
 #[derive(Clone)]
 pub struct OpenRouterAdapter {
@@ -39,8 +49,14 @@ impl OpenRouterAdapter {
     /// Build an adapter with the given API key (or `None` for the public
     /// catalog only) against the default endpoint.
     pub fn new(api_key: Option<String>) -> Self {
+        // A connect timeout so a dead endpoint fails fast; NO total timeout,
+        // which would cut off a legitimately long stream.
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(20))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         OpenRouterAdapter {
-            client: reqwest::Client::new(),
+            client,
             base_url: DEFAULT_BASE_URL.to_string(),
             api_key,
             referer: "https://github.com/decibelzin/decibel-harness".to_string(),
@@ -80,10 +96,14 @@ impl OpenRouterAdapter {
                 request = request.bearer_auth(key);
             }
 
-            let response = match request.send().await {
-                Ok(resp) => resp,
-                Err(err) => {
+            let response = match timeout(RESPONSE_TIMEOUT, request.send()).await {
+                Ok(Ok(resp)) => resp,
+                Ok(Err(err)) => {
                     yield StreamChunk::Finish { reason: transport_failure(&err) };
+                    return;
+                }
+                Err(_elapsed) => {
+                    yield StreamChunk::Finish { reason: timeout_failure("response headers") };
                     return;
                 }
             };
@@ -99,8 +119,16 @@ impl OpenRouterAdapter {
             let mut usage: Option<TokenUsage> = None;
             let mut finish: Option<FinishReason> = None;
 
-            while let Some(event) = events.next().await {
-                let event = match event {
+            loop {
+                let next = match timeout(IDLE_TIMEOUT, events.next()).await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => break,
+                    Err(_elapsed) => {
+                        finish = Some(timeout_failure("the next stream chunk"));
+                        break;
+                    }
+                };
+                let event = match next {
                     Ok(event) => event,
                     Err(err) => {
                         finish = Some(FinishReason::Error {
@@ -385,6 +413,18 @@ fn parse_error_object(error: &Value) -> LlmFailure {
         code: "PROVIDER_ERROR".into(),
         status,
         retry_after_ms: None,
+    }
+}
+
+/// A timeout waiting for the model — either its response or the next chunk.
+fn timeout_failure(what: &str) -> FinishReason {
+    FinishReason::Error {
+        failure: LlmFailure {
+            message: format!("timed out waiting for {what}"),
+            code: "TIMEOUT".into(),
+            status: None,
+            retry_after_ms: None,
+        },
     }
 }
 

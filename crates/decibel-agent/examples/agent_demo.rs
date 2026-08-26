@@ -101,17 +101,21 @@ async fn main() {
 
     let adapter = OpenRouterAdapter::new(Some(api_key));
 
-    // Candidate models: free + tool-capable, largest context first.
-    let candidates: Vec<String> = {
-        eprintln!("Fetching free tool-capable models…");
-        let mut models: Vec<_> = fetch_default_models()
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|m| m.is_free && m.supports_tools)
-            .collect();
-        models.sort_by(|a, b| b.context_length.cmp(&a.context_length));
-        models.into_iter().map(|m| m.id).collect()
+    // An explicit second arg pins the model; otherwise use the free +
+    // tool-capable catalog, largest context first.
+    let candidates: Vec<String> = match std::env::args().nth(2) {
+        Some(model) => vec![model],
+        None => {
+            eprintln!("Fetching free tool-capable models…");
+            let mut models: Vec<_> = fetch_default_models()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|m| m.is_free && m.supports_tools)
+                .collect();
+            models.sort_by(|a, b| b.context_length.cmp(&a.context_length));
+            models.into_iter().map(|m| m.id).collect()
+        }
     };
 
     eprintln!("Prompt: {prompt_text}\n");
@@ -138,7 +142,7 @@ async fn main() {
         // tier shares a quota, so skip to the next candidate.
         if let StopReason::Error(failure) = &outcome.stop_reason {
             let skippable = matches!(failure.status, Some(403) | Some(429))
-                || failure.code == "RATE_LIMIT"
+                || matches!(failure.code.as_str(), "RATE_LIMIT" | "TIMEOUT" | "PROVIDER_ERROR")
                 || failure.message.contains("agentic harnesses");
             if skippable && i + 1 < candidates.len() {
                 eprintln!("  ([{}] — next model)\n", failure.code);
