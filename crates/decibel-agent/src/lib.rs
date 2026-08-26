@@ -139,7 +139,9 @@ pub async fn run_turn_observed(
     config: &AgentConfig,
     prompt: Message,
     cancel: CancellationToken,
-    on_progress: &mut dyn FnMut(Progress<'_>),
+    // `+ Send` so the turn future stays `Send` — a subagent tool drives this from
+    // inside an `async_trait` (Send-future) method to delegate to a specialist.
+    on_progress: &mut (dyn FnMut(Progress<'_>) + Send),
 ) -> TurnOutcome {
     let turn = next_turn(session);
     let _ = session.append_log(EventKind::TurnStart { turn });

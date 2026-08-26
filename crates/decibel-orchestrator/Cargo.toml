@@ -1,0 +1,26 @@
+[package]
+name = "decibel-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Multi-agent red-team orchestration (Decepticon-inspired, lean one-shot form):
+# an orchestrator agent delegates each kill-chain phase (recon, exploitation,
+# reporting) to a specialist subagent with its own isolated context, restricted
+# toolset, and shared engagement finding store. The `delegate` tool runs a full
+# agent turn for the chosen specialist and returns its structured result.
+
+[dependencies]
+decibel-agent = { path = "../decibel-agent" }
+decibel-core = { path = "../decibel-core" }
+decibel-llm = { path = "../decibel-llm" }
+decibel-tools = { path = "../decibel-tools" }
+decibel-offsec = { path = "../decibel-offsec" }
+async-trait = "0.1"
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+decibel-openrouter = { path = "../decibel-openrouter" }
+dotenvy = "0.15"
+futures-core = "0.3"

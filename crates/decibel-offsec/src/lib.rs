@@ -30,6 +30,32 @@ pub use nmap::NmapTool;
 pub use search::{GlobTool, GrepTool};
 pub use shell::ShellTool;
 
+/// Every tool name the toolkit provides, in registration order.
+pub const ALL_TOOLS: &[&str] = &[
+    "shell", "nmap", "http", "read_file", "write_file", "str_replace", "glob", "grep", "add_finding",
+];
+
+/// Register the named subset of the toolkit into `registry`, sharing `findings`
+/// as the store `add_finding` records into. Unknown names are ignored, so a
+/// specialist can name exactly the tools it should have. `add_finding` is only
+/// installed when named.
+pub fn register_named(registry: &mut ToolRegistry, names: &[&str], findings: &FindingStore) {
+    for name in names {
+        match *name {
+            "shell" => registry.register(Arc::new(ShellTool)),
+            "nmap" => registry.register(Arc::new(NmapTool)),
+            "http" => registry.register(Arc::new(HttpTool)),
+            "read_file" => registry.register(Arc::new(ReadFileTool)),
+            "write_file" => registry.register(Arc::new(WriteFileTool)),
+            "str_replace" => registry.register(Arc::new(StrReplaceTool)),
+            "glob" => registry.register(Arc::new(GlobTool)),
+            "grep" => registry.register(Arc::new(GrepTool)),
+            "add_finding" => registry.register(Arc::new(AddFindingTool::new(findings.clone()))),
+            _ => None,
+        };
+    }
+}
+
 /// Register the complete offensive toolkit into `registry` and return the
 /// shared finding store the tools record into.
 ///
@@ -37,15 +63,7 @@ pub use shell::ShellTool;
 /// `str_replace`, `glob`, `grep`, `add_finding`.
 pub fn register_all(registry: &mut ToolRegistry) -> FindingStore {
     let findings = FindingStore::new();
-    registry.register(Arc::new(ShellTool));
-    registry.register(Arc::new(NmapTool));
-    registry.register(Arc::new(HttpTool));
-    registry.register(Arc::new(ReadFileTool));
-    registry.register(Arc::new(WriteFileTool));
-    registry.register(Arc::new(StrReplaceTool));
-    registry.register(Arc::new(GlobTool));
-    registry.register(Arc::new(GrepTool));
-    registry.register(Arc::new(AddFindingTool::new(findings.clone())));
+    register_named(registry, ALL_TOOLS, &findings);
     findings
 }
 
