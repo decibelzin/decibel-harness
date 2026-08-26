@@ -12,6 +12,12 @@ export const [freeOnly, setFreeOnly] = createSignal(true)
 export const [toolsOnly, setToolsOnly] = createSignal(true)
 export const [search, setSearch] = createSignal('')
 
+/** Model id prefixes known to be gated to registered OpenRouter apps (they
+ * reject a generic client with an AUTH error), so they are poor defaults. */
+function isGated(id: string): boolean {
+  return id.startsWith('thinkingmachines/')
+}
+
 export async function loadModels(): Promise<void> {
   setLoadingModels(true)
   setModelsError(undefined)
@@ -20,7 +26,11 @@ export async function loadModels(): Promise<void> {
     list.sort((a, b) => b.context_length - a.context_length)
     setModels(list)
     if (!selectedModel()) {
-      const best = list.find((m) => m.is_free && m.supports_tools) ?? list[0]
+      // Prefer a free tool-capable model, skipping ones known to be gated to
+      // registered OpenRouter apps (they reject with an AUTH error), so the
+      // default just works. `list` is already sorted by context desc.
+      const usable = list.filter((m) => m.is_free && m.supports_tools && !isGated(m.id))
+      const best = usable[0] ?? list.find((m) => m.is_free && m.supports_tools) ?? list[0]
       if (best) setSelectedModel(best.id)
     }
   } catch (e) {
