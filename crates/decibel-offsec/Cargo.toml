@@ -1,0 +1,28 @@
+[package]
+name = "decibel-offsec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The offensive toolkit: the model-facing tools that make Decibel a red-team
+# agent. Every tool implements `decibel_tools::Tool` (canonical value + pure
+# render), so a UI replays a tool card from the log and a future Code Mode
+# dispatches over the value. No guard rails: the shell and filesystem tools run
+# with the user's full authority — the one non-negotiable is scrubbing secret
+# env vars from spawned processes so a key never leaks into model context.
+
+[dependencies]
+decibel-tools = { path = "../decibel-tools" }
+decibel-llm = { path = "../decibel-llm" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"
+tokio = { version = "1", features = ["process", "fs", "io-util", "time", "rt", "macros", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+walkdir = "2"
+globset = "0.4"
+regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
