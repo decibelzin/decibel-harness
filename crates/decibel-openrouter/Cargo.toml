@@ -1,0 +1,25 @@
+[package]
+name = "decibel-openrouter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The OpenRouter adapter: live model catalog (`GET /api/v1/models`) and a
+# streaming chat-completions call that maps OpenAI-compatible SSE deltas onto
+# the neutral `StreamChunk` protocol. This is the one crate that talks to the
+# network; everything above it stays provider-neutral.
+
+[dependencies]
+decibel-llm = { path = "../decibel-llm" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures-util = "0.3"
+async-stream = "0.3"
+eventsource-stream = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+dotenvy = "0.15"

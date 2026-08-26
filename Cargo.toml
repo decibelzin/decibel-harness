@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/decibel-llm",
     "crates/decibel-core",
+    "crates/decibel-openrouter",
 ]
 
 [workspace.package]
