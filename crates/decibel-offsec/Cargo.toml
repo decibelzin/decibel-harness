@@ -26,3 +26,8 @@ regex = "1"
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tempfile = "3"
+# The live red-team demo wires the toolkit into the agent loop and OpenRouter.
+decibel-agent = { path = "../decibel-agent" }
+decibel-openrouter = { path = "../decibel-openrouter" }
+decibel-core = { path = "../decibel-core" }
+dotenvy = "0.15"
