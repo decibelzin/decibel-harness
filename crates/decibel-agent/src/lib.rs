@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use decibel_core::{EventKind, Session, SurfaceIntent, TurnEndReason};
 use decibel_llm::{
     BlockAssembler, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, LlmFailure, Message,
-    TokenUsage,
+    StreamChunk, TokenUsage,
 };
 use decibel_tools::{ExecCtx, ToolCall, ToolRegistry};
 
@@ -90,9 +90,34 @@ pub struct TurnOutcome {
     pub final_text: String,
 }
 
+/// A live progress event during a turn, for a UI or a demo to show activity as
+/// it happens rather than only at the end.
+#[derive(Clone, Copy, Debug)]
+pub enum Progress<'a> {
+    /// A new model step started.
+    Step(u64),
+    /// A fragment of streamed assistant text.
+    Token(&'a str),
+    /// The model requested a tool call.
+    ToolCall {
+        /// Tool name.
+        name: &'a str,
+        /// Raw argument JSON string.
+        args: &'a str,
+    },
+    /// A tool call settled.
+    ToolResult {
+        /// Tool name.
+        name: &'a str,
+        /// Whether it failed.
+        is_error: bool,
+    },
+}
+
 /// Run one turn: append the prompt, then step until the model stops calling
-/// tools. `cancel` aborts an in-flight step cooperatively (tools observe it and
-/// the stream is dropped). Every effect is a session event.
+/// tools. `cancel` aborts an in-flight step cooperatively. Every effect is a
+/// session event. This is the quiet form; use [`run_turn_observed`] to receive
+/// live [`Progress`] as the turn unfolds.
 pub async fn run_turn(
     session: &mut Session,
     adapter: &dyn LlmAdapter,
@@ -100,6 +125,21 @@ pub async fn run_turn(
     config: &AgentConfig,
     prompt: Message,
     cancel: CancellationToken,
+) -> TurnOutcome {
+    run_turn_observed(session, adapter, tools, config, prompt, cancel, &mut |_| {}).await
+}
+
+/// Like [`run_turn`], but reports live [`Progress`] to `on_progress` as tokens
+/// stream and tools run — so a caller can show activity instead of a silent
+/// wait. The callback must not block for long; it runs on the turn's task.
+pub async fn run_turn_observed(
+    session: &mut Session,
+    adapter: &dyn LlmAdapter,
+    tools: &ToolRegistry,
+    config: &AgentConfig,
+    prompt: Message,
+    cancel: CancellationToken,
+    on_progress: &mut dyn FnMut(Progress<'_>),
 ) -> TurnOutcome {
     let turn = next_turn(session);
     let _ = session.append_log(EventKind::TurnStart { turn });
@@ -113,6 +153,7 @@ pub async fn run_turn(
     loop {
         step += 1;
         let _ = session.append_log(EventKind::StepStart { turn, step });
+        on_progress(Progress::Step(step));
 
         // Assemble the request from the derived history plus the visible tools.
         let options = GenerateOptions {
@@ -130,6 +171,9 @@ pub async fn run_turn(
         let mut chunk_seqs: Vec<u64> = Vec::new();
         let mut stream = adapter.stream(options);
         while let Some(chunk) = stream.next().await {
+            if let StreamChunk::TextDelta { text, .. } = &chunk {
+                on_progress(Progress::Token(text));
+            }
             if let Ok(event) =
                 session.append_log(EventKind::AssistantChunk { turn, step, chunk: chunk.clone() })
             {
@@ -212,12 +256,15 @@ pub async fn run_turn(
                 .map(|e| e.seq)
                 .unwrap_or(0);
 
+            on_progress(Progress::ToolCall { name: &name, args: &raw_args });
             let arguments = parse_arguments(&raw_args);
             let ctx = ExecCtx::with_token(cancel.clone());
+            let tool_name = name.clone();
             let result = tools
                 .execute(ToolCall { call_id: call_id.clone(), name, arguments }, &ctx)
                 .await;
             concluded = concluded || result.concludes_turn;
+            on_progress(Progress::ToolResult { name: &tool_name, is_error: result.is_error });
 
             let result_message =
                 Message::tool_result(format!("r-{call_id}"), call_id, result.content, result.is_error);

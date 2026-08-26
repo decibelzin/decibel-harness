@@ -8,7 +8,9 @@
 //!
 //! Authorized use only: run it against systems you own or may test.
 
-use decibel_agent::{run_turn, AgentConfig, StopReason, TurnSignal};
+use std::io::Write;
+
+use decibel_agent::{run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
 use decibel_core::Session;
 use decibel_llm::{ContentBlock, Message, MessageSource};
 use decibel_openrouter::{fetch_default_models, OpenRouterAdapter};
@@ -71,7 +73,29 @@ async fn main() {
         let config = AgentConfig::new("openrouter", model).with_system(SYSTEM).with_max_tokens(1200);
         let prompt = Message::human("u1", vec![ContentBlock::text(prompt_text.clone())]);
 
-        let outcome = run_turn(&mut session, &adapter, &registry, &config, prompt, TurnSignal::new()).await;
+        // Live progress: tokens, tool calls, and results appear as they happen,
+        // so a multi-step recon turn never looks frozen.
+        eprintln!("  (streaming — Ctrl+C to stop)\n");
+        let outcome = run_turn_observed(
+            &mut session,
+            &adapter,
+            &registry,
+            &config,
+            prompt,
+            TurnSignal::new(),
+            &mut |event| match event {
+                Progress::Step(n) => println!("\n\n──── step {n} ────"),
+                Progress::Token(t) => {
+                    print!("{t}");
+                    let _ = std::io::stdout().flush();
+                }
+                Progress::ToolCall { name, args } => println!("\n→ {name} {args}"),
+                Progress::ToolResult { name, is_error } => {
+                    println!("  {} {name}", if is_error { "[error]" } else { "[ok]" })
+                }
+            },
+        )
+        .await;
 
         if let StopReason::Error(failure) = &outcome.stop_reason {
             let skippable = matches!(failure.status, Some(403) | Some(429))
