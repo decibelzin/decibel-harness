@@ -4,6 +4,7 @@ members = [
     "crates/decibel-llm",
     "crates/decibel-core",
     "crates/decibel-openrouter",
+    "crates/decibel-tools",
 ]
 
 [workspace.package]

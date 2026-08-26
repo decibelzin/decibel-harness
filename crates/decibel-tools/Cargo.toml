@@ -1,0 +1,22 @@
+[package]
+name = "decibel-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The tool registry and guarded execution pipeline. A tool returns a canonical
+# JSON value; a pure `render` projects that value to model-facing content. The
+# value/render split is what lets a UI replay a tool card from the log and what
+# a future Code Mode dispatches over — the model and the UI read the same facts
+# without parsing text. Execution runs pre-policy → body → post → result.
+
+[dependencies]
+decibel-llm = { path = "../decibel-llm" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+tokio-util = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
