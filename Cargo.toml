@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/decibel-llm",
+    "crates/decibel-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["decibel"]
+repository = "https://github.com/decibelzin/decibel-harness"
+
+# Decibel Harness — a lightweight desktop autonomous red-team agent harness.
+#
+# Architecture is a Rust port of the ideas proven in DeepSeek Harness (MIT):
+# an event-sourced session log is the single source of truth, the model
+# message history is DERIVED from it, and the agent loop is a thin driver over
+# swappable capability seams. Offensive-security focus lives in the toolkit and
+# presets layered on top; the core is domain-neutral.
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

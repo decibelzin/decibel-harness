@@ -1,0 +1,16 @@
+[package]
+name = "decibel-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The event-sourced session log — the single source of truth. The model message
+# history is DERIVED from this append-only log via an ordered surface
+# projection; compaction shadows nodes with a replace op rather than deleting.
+# Persistence is a plain JSONL codec here (a swappable backend later).
+
+[dependencies]
+decibel-llm = { path = "../decibel-llm" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
