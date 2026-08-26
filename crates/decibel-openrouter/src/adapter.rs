@@ -29,11 +29,13 @@ const TEXT_INDEX: u32 = 1;
 const TOOL_CALL_BASE: u32 = 2;
 
 /// How long to wait for the response headers before giving up on a model.
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(45);
-/// How long to wait between stream chunks before treating the model as hung.
-/// A free model that accepts the connection but never sends a terminal finish
-/// would otherwise block the whole loop forever.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long to wait for the FIRST stream chunk. A free model that returns 200
+/// but never starts streaming (overloaded / queued) is skipped fast instead of
+/// stalling the whole cycle.
+const FIRST_CHUNK_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long to wait between chunks once streaming has started.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// The OpenRouter adapter. Holds the HTTP client, endpoint, and optional key.
 #[derive(Clone)]
@@ -119,12 +121,18 @@ impl OpenRouterAdapter {
             let mut usage: Option<TokenUsage> = None;
             let mut finish: Option<FinishReason> = None;
 
+            let mut got_first = false;
             loop {
-                let next = match timeout(IDLE_TIMEOUT, events.next()).await {
-                    Ok(Some(event)) => event,
+                let wait = if got_first { IDLE_TIMEOUT } else { FIRST_CHUNK_TIMEOUT };
+                let next = match timeout(wait, events.next()).await {
+                    Ok(Some(event)) => { got_first = true; event }
                     Ok(None) => break,
                     Err(_elapsed) => {
-                        finish = Some(timeout_failure("the next stream chunk"));
+                        finish = Some(timeout_failure(if got_first {
+                            "the next stream chunk"
+                        } else {
+                            "the first stream chunk (model did not start responding)"
+                        }));
                         break;
                     }
                 };
