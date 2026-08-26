@@ -111,6 +111,12 @@ pub enum Progress<'a> {
         name: &'a str,
         /// Whether it failed.
         is_error: bool,
+        /// The tool's rendered, model-facing output text (its `render` result),
+        /// so a UI can show the same fact the model saw without re-rendering.
+        output: &'a str,
+        /// The tool's canonical JSON value on success, for a structured UI card
+        /// (e.g. an nmap ports table). `None` on error.
+        value: Option<&'a Value>,
     },
 }
 
@@ -153,6 +159,16 @@ pub async fn run_turn_observed(
     let mut final_text = String::new();
 
     loop {
+        // A cooperative cancel between steps ends the turn here, before another
+        // model request is issued. Without this, a Stop that lands after a step's
+        // stream still lets the loop fire the next step's request (a wasted call
+        // that also delays the actual stop by a full model round-trip). The
+        // in-stream check below handles a cancel during a step.
+        if cancel.is_cancelled() {
+            let _ = session.append_log(EventKind::TurnEnd { turn, reason: TurnEndReason::Completed });
+            return TurnOutcome { stop_reason: StopReason::Completed, turn, steps: step, final_text };
+        }
+
         step += 1;
         let _ = session.append_log(EventKind::StepStart { turn, step });
         on_progress(Progress::Step(step));
@@ -266,7 +282,20 @@ pub async fn run_turn_observed(
                 .execute(ToolCall { call_id: call_id.clone(), name, arguments }, &ctx)
                 .await;
             concluded = concluded || result.concludes_turn;
-            on_progress(Progress::ToolResult { name: &tool_name, is_error: result.is_error });
+            // The rendered, model-facing text — the same content the model reads
+            // back — so a UI can present the tool's output without re-rendering.
+            let output = result
+                .content
+                .iter()
+                .filter_map(ContentBlock::as_text)
+                .collect::<Vec<_>>()
+                .join("");
+            on_progress(Progress::ToolResult {
+                name: &tool_name,
+                is_error: result.is_error,
+                output: &output,
+                value: result.value.as_ref(),
+            });
 
             let result_message =
                 Message::tool_result(format!("r-{call_id}"), call_id, result.content, result.is_error);

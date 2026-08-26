@@ -18,7 +18,11 @@ export type RunEvent =
   | { type: 'step'; n: number }
   | { type: 'token'; text: string }
   | { type: 'tool_call'; name: string; args: string }
-  | { type: 'tool_result'; name: string; ok: boolean }
+  // `output` is the tool's rendered model-facing text; `value` is its canonical
+  // JSON (present on success) — the source for structured cards (nmap, http, …).
+  | { type: 'tool_result'; name: string; ok: boolean; output: string; value: unknown }
+  // The chosen model hit a skippable error and the run switched to `to`.
+  | { type: 'model_fallback'; to: string; reason: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
 
@@ -65,11 +69,14 @@ export async function deleteApiKey(): Promise<void> {
 
 /** Run one prompt, streaming events. Real in Tauri, mocked in browser preview.
  * `runId` tags this run so a Stop/New-session can cancel exactly it on the
- * backend and stale events can be filtered out on the frontend. */
+ * backend and stale events can be filtered out on the frontend. When `fallback`
+ * is set, the backend transparently retries other free models on skippable
+ * errors (gated / rate-limited / overloaded). */
 export async function runPrompt(
   prompt: string,
   model: string,
   runId: number,
+  fallback: boolean,
   onEvent: (e: RunEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -81,13 +88,14 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    await invoke('run_prompt', { prompt, model, runId, onEvent: channel })
+    await invoke('run_prompt', { prompt, model, runId, fallback, onEvent: channel })
     return
   }
   await mockRun(prompt, model, onEvent, signal)
 }
 
-/** A believable mock so the conversation UI is demonstrable without a key. */
+/** A believable mock so the conversation UI is demonstrable without a key. It
+ * exercises every rich tool card (nmap, shell, http, finding) and markdown. */
 async function mockRun(
   prompt: string,
   _model: string,
@@ -99,29 +107,93 @@ async function mockRun(
     for (const word of text.split(/(\s+)/)) {
       if (signal?.aborted) return
       onEvent({ type: 'token', text: word })
-      await sleep(18)
+      await sleep(14)
     }
   }
 
   onEvent({ type: 'step', n: 1 })
-  await emitText("Starting recon on the target. I'll enumerate open ports first.")
+  await emitText("Starting recon on the target. I'll enumerate open ports with a structured nmap scan first.")
   if (signal?.aborted) return
   onEvent({ type: 'tool_call', name: 'nmap', args: '{"target":"127.0.0.1","service_version":true}' })
   await sleep(700)
-  onEvent({ type: 'tool_result', name: 'nmap', ok: true })
+  onEvent({
+    type: 'tool_result',
+    name: 'nmap',
+    ok: true,
+    output: 'nmap 127.0.0.1 — 1 host(s)\n\n127.0.0.1 (localhost) [up]\n  22/tcp open ssh OpenSSH 8.9p1\n  80/tcp open http nginx 1.24.0',
+    value: {
+      target: '127.0.0.1',
+      timed_out: false,
+      hosts: [
+        {
+          address: '127.0.0.1',
+          hostname: 'localhost',
+          status: 'up',
+          ports: [
+            { port: 22, protocol: 'tcp', state: 'open', service: 'ssh', product: 'OpenSSH', version: '8.9p1' },
+            { port: 80, protocol: 'tcp', state: 'open', service: 'http', product: 'nginx', version: '1.24.0' },
+            { port: 443, protocol: 'tcp', state: 'filtered', service: 'https', product: '', version: '' },
+          ],
+        },
+      ],
+    },
+  })
 
   onEvent({ type: 'step', n: 2 })
-  await emitText('\n\nFound SSH (22) and HTTP (80) open. Probing the web service.')
+  await emitText('\n\nSSH (22) and HTTP (80) are open. Probing the web root for the server banner and headers.')
   if (signal?.aborted) return
   onEvent({ type: 'tool_call', name: 'http', args: '{"url":"http://127.0.0.1/","method":"GET"}' })
   await sleep(500)
-  onEvent({ type: 'tool_result', name: 'http', ok: true })
+  onEvent({
+    type: 'tool_result',
+    name: 'http',
+    ok: true,
+    output: 'GET http://127.0.0.1/ → 200\nserver: nginx/1.24.0\ncontent-type: text/html\n\n<!doctype html><title>Welcome</title>',
+    value: {
+      status: 200,
+      headers: { server: 'nginx/1.24.0', 'content-type': 'text/html', 'x-powered-by': 'Express' },
+      body: '<!doctype html>\n<html><head><title>Welcome</title></head>\n<body><h1>It works</h1></body></html>',
+      body_truncated: false,
+    },
+  })
 
   onEvent({ type: 'step', n: 3 })
+  await emitText('\n\nThe `x-powered-by: Express` header leaks the framework. Running a quick version check via shell.')
+  if (signal?.aborted) return
+  onEvent({ type: 'tool_call', name: 'shell', args: '{"command":"curl -sI http://127.0.0.1/ | grep -i x-powered-by"}' })
+  await sleep(450)
+  onEvent({
+    type: 'tool_result',
+    name: 'shell',
+    ok: true,
+    output: 'x-powered-by: Express\n[exit code: 0]',
+    value: { exit_code: 0, stdout: 'x-powered-by: Express\n', stderr: '', timed_out: false },
+  })
+
+  if (signal?.aborted) return
+  onEvent({ type: 'tool_call', name: 'add_finding', args: '{"title":"Framework disclosure via X-Powered-By"}' })
+  await sleep(300)
+  onEvent({
+    type: 'tool_result',
+    name: 'add_finding',
+    ok: true,
+    output: 'recorded finding #1: [low] Framework disclosure via X-Powered-By [T1592]',
+    value: {
+      recorded: true,
+      index: 1,
+      finding: {
+        title: 'Framework disclosure via X-Powered-By',
+        severity: 'low',
+        description: 'The server advertises `X-Powered-By: Express`, disclosing the web framework and easing targeted attacks.',
+        target: 'http://127.0.0.1/',
+        mitre: 'T1592',
+      },
+    },
+  })
+
+  onEvent({ type: 'step', n: 4 })
   await emitText(
-    '\n\n**Summary:** 127.0.0.1 exposes SSH (OpenSSH) and HTTP (nginx). ' +
-      'Next I would fingerprint the web app and test for common misconfigurations. ' +
-      '(This is a mocked run — the Tauri build drives the real agent.)',
+    "\n\n## Summary\n\n`127.0.0.1` exposes:\n\n- **SSH** (22) — OpenSSH `8.9p1`\n- **HTTP** (80) — nginx fronting an **Express** app\n\nOne low-severity finding recorded (framework disclosure). Next I'd fingerprint the Express routes and test for common misconfigurations.\n\n> This is a mocked run — the Tauri build drives the real agent.",
   )
   onEvent({ type: 'done' })
 }

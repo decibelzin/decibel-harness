@@ -1,8 +1,12 @@
-import { createSignal, For, onMount, Show, type JSX } from 'solid-js'
+import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
 import { deleteApiKey, hasApiKey, isTauri, saveApiKey, type ModelInfo } from './api'
+import { highlightWithin, renderMarkdown } from './markdown'
 import {
+  activeModel,
+  applyTheme,
+  autoFallback,
   cancel,
   conversation,
   settingsOpen,
@@ -18,13 +22,16 @@ import {
   search,
   selectedModel,
   send,
+  setAutoFallback,
   setFreeOnly,
   setSearch,
   setSelectedModel,
   setToolsOnly,
+  theme,
   toolsOnly,
   visibleModels,
   type Block,
+  type ToolBlock,
 } from './store'
 
 function fmtCtx(n: number): string {
@@ -34,6 +41,16 @@ function fmtCtx(n: number): string {
   }
   if (n >= 1000) return `${Math.round(n / 1000)}K`
   return String(n)
+}
+
+/** Parse a tool's raw argument JSON; never throws (partial/invalid → {}). */
+function parseArgs(raw: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(raw)
+    return v && typeof v === 'object' ? v : {}
+  } catch {
+    return {}
+  }
 }
 
 // ── icons (inline, currentColor) ─────────────────────────────────────────────
@@ -74,6 +91,15 @@ const IconGear = () => svg(<><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7
 const IconCollapse = () => svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="9" y1="4" x2="9" y2="20" /></>, 17)
 const IconSend = () => svg(<><line x1="12" y1="19" x2="12" y2="5" /><polyline points="6 11 12 5 18 11" /></>, 17, 2.2)
 const IconMode = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points="18 3 18 7 14 7" /><path d="M20 12a8 8 0 0 1-14 5" /><polyline points="6 21 6 17 10 17" /></>, 15)
+// tool-card glyphs
+const IconTerminal = () => svg(<><polyline points="5 8 9 12 5 16" /><line x1="12" y1="16" x2="18" y2="16" /></>, 15)
+const IconFile = () => svg(<><path d="M6 3h8l4 4v14H6z" /><polyline points="14 3 14 7 18 7" /></>, 15)
+const IconEdit = () => svg(<><path d="M4 20h4l10-10-4-4L4 16z" /><line x1="13" y1="6" x2="17" y2="10" /></>, 15)
+const IconNet = () => svg(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" /></>, 15)
+const IconGlobe = () => svg(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18" /></>, 15)
+const IconShield = () => svg(<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />, 15)
+const IconWrench = () => svg(<path d="M14 6a4 4 0 0 0-5 5L4 16l4 4 5-5a4 4 0 0 0 5-5l-3 3-2-2z" />, 15)
+const IconSwitch = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points="18 2 18 7 13 7" /><path d="M20 12a8 8 0 0 1-14 5" /><polyline points="6 22 6 17 11 17" /></>, 13)
 
 // ── sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar() {
@@ -108,7 +134,19 @@ function Sidebar() {
   )
 }
 
-function Settings() {
+// ── reusable bits ─────────────────────────────────────────────────────────────
+function Toggle(props: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
+  return (
+    <button class={`switch ${props.on ? 'on' : ''}`} role="switch" aria-checked={props.on} onClick={() => props.onChange(!props.on)}>
+      <span class="knob" />
+    </button>
+  )
+}
+
+// ── settings (tabbed page) ────────────────────────────────────────────────────
+type SettingsTab = 'models' | 'general' | 'appearance' | 'about'
+
+function ApiKeyField() {
   const [key, setKey] = createSignal('')
   const [stored, setStored] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
@@ -118,9 +156,7 @@ function Settings() {
   const save = async () => {
     const k = key().trim()
     if (!k) return
-    setBusy(true)
-    setError(undefined)
-    setSaved(false)
+    setBusy(true); setError(undefined); setSaved(false)
     try {
       await saveApiKey(k)
       setKey('')
@@ -133,9 +169,7 @@ function Settings() {
     }
   }
   const clear = async () => {
-    setBusy(true)
-    setError(undefined)
-    setSaved(false)
+    setBusy(true); setError(undefined); setSaved(false)
     try {
       await deleteApiKey()
       setStored(await hasApiKey())
@@ -146,53 +180,183 @@ function Settings() {
     }
   }
   return (
+    <div class="setting">
+      <div class="field-label">OpenRouter API key</div>
+      <div class="field-help">
+        Stored in your OS keyring, never in a file. Get a free key at{' '}
+        <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
+      </div>
+      <Show when={!isTauri()}>
+        <div class="key-status" style={{ color: 'var(--warning)' }}>
+          <span class="kd" style={{ background: 'var(--warning)' }} />
+          Browser preview — the keyring only works in the desktop app (npm run app).
+        </div>
+      </Show>
+      <div class="field-row">
+        <input
+          type="password"
+          placeholder="sk-or-v1-…"
+          value={key()}
+          onInput={(e) => setKey(e.currentTarget.value)}
+          onKeyDown={(e) => e.key === 'Enter' && save()}
+        />
+        <button class="btn primary" disabled={busy() || !key().trim()} onClick={save}>
+          {busy() ? 'Saving…' : 'Save'}
+        </button>
+        <Show when={stored()}>
+          <button class="btn danger" disabled={busy()} onClick={clear}>Clear</button>
+        </Show>
+      </div>
+      <Show when={error()}>
+        {(e) => (
+          <div class="key-status" style={{ color: 'var(--danger)' }}>
+            <span class="kd" style={{ background: 'var(--danger)' }} />Failed: {e()}
+          </div>
+        )}
+      </Show>
+      <Show when={saved() && !error()}>
+        <div class="key-status set"><span class="kd" />Key saved to the keyring.</div>
+      </Show>
+      <div class={`key-status ${stored() ? 'set' : ''}`}>
+        <span class="kd" />
+        {stored() ? 'A key is stored in the keyring.' : 'No key set — the agent cannot run until you add one.'}
+      </div>
+    </div>
+  )
+}
+
+function ModelsTab() {
+  return (
+    <>
+      <ApiKeyField />
+      <div class="setting">
+        <div class="field-label">Default model</div>
+        <div class="field-help">The model new runs start with. Auto-fallback may switch it live if it's unavailable.</div>
+        <div class="filters embedded">
+          <input class="search" placeholder="search models…" value={search()} onInput={(e) => setSearch(e.currentTarget.value)} />
+          <label class="toggle"><input type="checkbox" checked={freeOnly()} onChange={(e) => setFreeOnly(e.currentTarget.checked)} />free</label>
+          <label class="toggle"><input type="checkbox" checked={toolsOnly()} onChange={(e) => setToolsOnly(e.currentTarget.checked)} />tools</label>
+          <button class="refresh" onClick={() => loadModels()}>{loadingModels() ? '…' : '↻'}</button>
+        </div>
+        <div class="model-count">
+          <Show when={modelsError()} fallback={<>Showing {visibleModels().length} of {models().length} models</>}>
+            {(err) => <span style={{ color: 'var(--danger)' }}>catalog error: {err()}</span>}
+          </Show>
+        </div>
+        <div class="model-rows embedded">
+          <For each={visibleModels()}>
+            {(m) => (
+              <div class={`model-row ${m.id === selectedModel() ? 'selected' : ''}`} onClick={() => setSelectedModel(m.id)}>
+                <div class="mid">
+                  <div class="name">{m.name}</div>
+                  <div class="sub">{m.id}</div>
+                </div>
+                <ModelBadges m={m} />
+              </div>
+            )}
+          </For>
+        </div>
+      </div>
+    </>
+  )
+}
+
+function GeneralTab() {
+  return (
+    <>
+      <div class="setting row">
+        <div>
+          <div class="field-label">Automatic model fallback</div>
+          <div class="field-help">When a model is gated, rate-limited, or overloaded, retry the next free tool-capable model automatically instead of failing the run.</div>
+        </div>
+        <Toggle on={autoFallback()} onChange={setAutoFallback} />
+      </div>
+      <div class="setting">
+        <div class="field-label">Authority</div>
+        <div class="field-help">Decibel runs with full shell, filesystem, and network authority by design — there is no sandbox. Only run it against systems you own or are authorized to test. Secret-looking environment variables are scrubbed from spawned processes so keys never leak into context.</div>
+      </div>
+    </>
+  )
+}
+
+function AppearanceTab() {
+  const opts: { id: ReturnType<typeof theme>; label: string; hint: string }[] = [
+    { id: 'dark', label: 'Dark', hint: 'The default near-black surface.' },
+    { id: 'light', label: 'Light', hint: 'A bright surface for daylight work.' },
+    { id: 'system', label: 'System', hint: 'Follow the OS appearance setting.' },
+  ]
+  return (
+    <div class="setting">
+      <div class="field-label">Theme</div>
+      <div class="field-help">Choose the app's appearance.</div>
+      <div class="theme-opts">
+        <For each={opts}>
+          {(o) => (
+            <button class={`theme-opt ${theme() === o.id ? 'selected' : ''}`} onClick={() => applyTheme(o.id)}>
+              <span class={`swatch ${o.id}`} />
+              <span class="to-label">{o.label}</span>
+              <span class="to-hint">{o.hint}</span>
+            </button>
+          )}
+        </For>
+      </div>
+    </div>
+  )
+}
+
+function AboutTab() {
+  return (
+    <div class="setting about">
+      <div class="about-head">
+        <span class="logo"><Logo size={40} /></span>
+        <div>
+          <div class="about-name">Decibel <span class="pill">v0.1</span></div>
+          <div class="field-help">Autonomous offensive-security agent</div>
+        </div>
+      </div>
+      <p class="about-text">
+        A lightweight desktop red-team / pentest agent. It drives a recon → analysis → exploitation →
+        reporting loop over an offensive toolkit (shell, nmap, http, filesystem, search, findings),
+        powered by free OpenRouter models. No guardrails by design.
+      </p>
+      <div class="about-links">
+        <a href="https://github.com/decibelzin/decibel-harness" target="_blank" rel="noreferrer">Repository</a>
+        <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">Get an API key</a>
+      </div>
+    </div>
+  )
+}
+
+function Settings() {
+  const [tab, setTab] = createSignal<SettingsTab>('models')
+  const tabs: { id: SettingsTab; label: string }[] = [
+    { id: 'models', label: 'Models & Providers' },
+    { id: 'general', label: 'General' },
+    { id: 'appearance', label: 'Appearance' },
+    { id: 'about', label: 'About' },
+  ]
+  return (
     <div class="modal-backdrop" onClick={() => setSettingsOpen(false)}>
-      <div class="modal" onClick={(e) => e.stopPropagation()}>
-        <div class="m-head">
+      <div class="settings-page" onClick={(e) => e.stopPropagation()}>
+        <div class="sp-head">
           Settings
           <button class="x" onClick={() => setSettingsOpen(false)}>✕</button>
         </div>
-        <div class="m-body">
-          <div class="field-label">OpenRouter API key</div>
-          <div class="field-help">
-            Stored in your OS keyring, never in a file. Get a free key at{' '}
-            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
-          </div>
-          <Show when={!isTauri()}>
-            <div class="key-status" style={{ color: 'var(--warning)' }}>
-              <span class="kd" style={{ background: 'var(--warning)' }} />
-              Running in browser preview — the keyring only works in the desktop app (npm run app).
-            </div>
-          </Show>
-          <div class="field-row">
-            <input
-              type="password"
-              placeholder="sk-or-v1-…"
-              value={key()}
-              onInput={(e) => setKey(e.currentTarget.value)}
-              onKeyDown={(e) => e.key === 'Enter' && save()}
-            />
-            <button class="btn primary" disabled={busy() || !key().trim()} onClick={save}>
-              {busy() ? 'Saving…' : 'Save'}
-            </button>
-            <Show when={stored()}>
-              <button class="btn danger" disabled={busy()} onClick={clear}>Clear</button>
-            </Show>
-          </div>
-          <Show when={error()}>
-            {(e) => (
-              <div class="key-status" style={{ color: 'var(--danger)' }}>
-                <span class="kd" style={{ background: 'var(--danger)' }} />
-                Failed: {e()}
-              </div>
-            )}
-          </Show>
-          <Show when={saved() && !error()}>
-            <div class="key-status set"><span class="kd" />Key saved to the keyring.</div>
-          </Show>
-          <div class={`key-status ${stored() ? 'set' : ''}`}>
-            <span class="kd" />
-            {stored() ? 'A key is stored in the keyring.' : 'No key set — the agent cannot run until you add one.'}
+        <div class="sp-body">
+          <nav class="sp-nav">
+            <For each={tabs}>
+              {(t) => (
+                <button class={`sp-tab ${tab() === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>{t.label}</button>
+              )}
+            </For>
+          </nav>
+          <div class="sp-content">
+            <Switch>
+              <Match when={tab() === 'models'}><ModelsTab /></Match>
+              <Match when={tab() === 'general'}><GeneralTab /></Match>
+              <Match when={tab() === 'appearance'}><AppearanceTab /></Match>
+              <Match when={tab() === 'about'}><AboutTab /></Match>
+            </Switch>
           </div>
         </div>
       </div>
@@ -266,7 +430,9 @@ function ModelPanel(props: { onClose: () => void }) {
 function Composer() {
   const [text, setText] = createSignal('')
   const [panel, setPanel] = createSignal(false)
-  const current = () => modelById(selectedModel())
+  // Show the effective model: the live fallback while a run is switching, else
+  // the user's saved selection.
+  const current = () => modelById(activeModel() ?? selectedModel())
   const submit = () => {
     if (running()) return cancel()
     const t = text()
@@ -326,17 +492,295 @@ function Composer() {
   )
 }
 
-// ── conversation ──────────────────────────────────────────────────────────────
-function ToolCardView(props: { block: Extract<Block, { kind: 'tool' }> }) {
+// ── markdown ──────────────────────────────────────────────────────────────────
+function Markdown(props: { text: string }) {
+  let el: HTMLDivElement | undefined
+  createEffect(() => {
+    const src = props.text
+    if (!el) return
+    el.innerHTML = renderMarkdown(src)
+    highlightWithin(el)
+  })
+  // Keep link clicks from navigating the webview away from the app.
+  const onClick = (e: MouseEvent) => {
+    const a = (e.target as HTMLElement)?.closest('a') as HTMLAnchorElement | null
+    if (a?.href) {
+      e.preventDefault()
+      try {
+        window.open(a.href, '_blank', 'noopener,noreferrer')
+      } catch {
+        /* opener unavailable — swallow so the app never navigates away */
+      }
+    }
+  }
+  return <div class="md" ref={el} onClick={onClick} />
+}
+
+// ── tool cards ────────────────────────────────────────────────────────────────
+interface ToolMeta {
+  label: string
+  icon: () => JSX.Element
+}
+function toolMeta(name: string): ToolMeta {
+  switch (name) {
+    case 'shell': return { label: 'shell', icon: IconTerminal }
+    case 'nmap': return { label: 'nmap', icon: IconNet }
+    case 'http': return { label: 'http', icon: IconGlobe }
+    case 'read_file': return { label: 'read_file', icon: IconFile }
+    case 'write_file': return { label: 'write_file', icon: IconFile }
+    case 'str_replace': return { label: 'str_replace', icon: IconEdit }
+    case 'glob': return { label: 'glob', icon: IconSearch }
+    case 'grep': return { label: 'grep', icon: IconSearch }
+    case 'add_finding': return { label: 'add_finding', icon: IconShield }
+    default: return { label: name, icon: IconWrench }
+  }
+}
+
+/** One-line context shown in the card header (the salient argument). */
+function argSummary(block: ToolBlock): string {
+  const a = parseArgs(block.args)
+  const s = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
+  switch (block.name) {
+    case 'shell': return s(a.command)
+    case 'nmap': return s(a.target)
+    case 'http': return `${s(a.method || 'GET').toUpperCase()} ${s(a.url)}`.trim()
+    case 'read_file':
+    case 'write_file':
+    case 'str_replace': return s(a.path)
+    case 'glob':
+    case 'grep': return s(a.pattern)
+    case 'add_finding': return s(a.title)
+    default: {
+      const first = Object.values(a).find((v) => typeof v === 'string')
+      return s(first)
+    }
+  }
+}
+
+function ShellBody(props: { block: ToolBlock }) {
+  const v = () => (props.block.value as any) ?? {}
+  return (
+    <>
+      <pre class="term">{props.block.output || '(no output)'}</pre>
+      <Show when={v().exit_code != null || v().timed_out}>
+        <div class="tc-foot">
+          <Show when={v().timed_out} fallback={<span class={`chip-sm ${v().exit_code === 0 ? 'ok' : 'bad'}`}>exit {String(v().exit_code)}</span>}>
+            <span class="chip-sm bad">timed out</span>
+          </Show>
+        </div>
+      </Show>
+    </>
+  )
+}
+
+function ReadBody(props: { block: ToolBlock }) {
+  const v = () => (props.block.value as any) ?? {}
+  const lines = () => String(v().content ?? props.block.output ?? '').split('\n')
+  const start = () => Number(v().offset ?? 1)
+  return (
+    <>
+      <div class="code-read">
+        <For each={lines()}>
+          {(ln, i) => (
+            <div class="cl">
+              <span class="ln">{start() + i()}</span>
+              <span class="lt">{ln || ' '}</span>
+            </div>
+          )}
+        </For>
+      </div>
+      <Show when={v().truncated}><div class="tc-foot"><span class="chip-sm">truncated</span></div></Show>
+    </>
+  )
+}
+
+function EditBody(props: { block: ToolBlock }) {
+  const a = () => parseArgs(props.block.args)
+  const isReplace = () => props.block.name === 'str_replace'
+  return (
+    <>
+      <div class="tc-note">{props.block.output}</div>
+      <Show when={isReplace() && (a().old_str || a().new_str)}>
+        <div class="diff">
+          <Show when={a().old_str}><pre class="dl del">- {String(a().old_str)}</pre></Show>
+          <Show when={a().new_str}><pre class="dl add">+ {String(a().new_str)}</pre></Show>
+        </div>
+      </Show>
+      <Show when={props.block.name === 'write_file' && typeof a().content === 'string'}>
+        <pre class="term small">{String(a().content).split('\n').slice(0, 12).join('\n')}</pre>
+      </Show>
+    </>
+  )
+}
+
+function SearchBody(props: { block: ToolBlock }) {
+  const v = () => (props.block.value as any) ?? {}
+  return (
+    <Switch fallback={<pre class="term">{props.block.output || '(no matches)'}</pre>}>
+      <Match when={props.block.name === 'grep' && Array.isArray(v().files)}>
+        <div class="search-out">
+          <For each={v().files as any[]}>
+            {(f) => (
+              <div class="sf">
+                <div class="sf-path">{String(f.path)}</div>
+                <For each={(f.matches as any[]) ?? []}>
+                  {(m) => (<div class="sm"><span class="ln">{String(m.line)}</span><span class="lt">{String(m.text)}</span></div>)}
+                </For>
+              </div>
+            )}
+          </For>
+          <Show when={v().truncated}><div class="tc-foot"><span class="chip-sm">results capped</span></div></Show>
+        </div>
+      </Match>
+      <Match when={props.block.name === 'glob' && Array.isArray(v().paths)}>
+        <div class="search-out">
+          <For each={v().paths as string[]}>{(p) => <div class="gp">{p}</div>}</For>
+          <Show when={(v().paths as string[]).length === 0}><div class="tc-note">(no matches)</div></Show>
+        </div>
+      </Match>
+    </Switch>
+  )
+}
+
+function httpStatusClass(status: number): string {
+  if (status >= 200 && status < 300) return 'ok'
+  if (status >= 300 && status < 400) return 'redir'
+  if (status >= 400 && status < 500) return 'warn'
+  return 'bad'
+}
+function HttpBody(props: { block: ToolBlock }) {
+  const v = () => (props.block.value as any) ?? {}
+  const a = () => parseArgs(props.block.args)
+  const headers = () => Object.entries((v().headers as Record<string, string>) ?? {})
+  return (
+    <>
+      <div class="http-line">
+        <span class={`chip-sm ${httpStatusClass(Number(v().status))}`}>{String(v().status ?? '—')}</span>
+        <span class="http-url">{String(a().method || 'GET').toUpperCase()} {String(a().url ?? '')}</span>
+      </div>
+      <Show when={headers().length}>
+        <div class="http-headers">
+          <For each={headers()}>
+            {([k, val]) => (<div class="hh"><span class="hk">{k}</span><span class="hv">{String(val)}</span></div>)}
+          </For>
+        </div>
+      </Show>
+      <Show when={v().body}>
+        <pre class="term small">{String(v().body)}</pre>
+      </Show>
+      <Show when={v().body_truncated}><div class="tc-foot"><span class="chip-sm">body truncated</span></div></Show>
+    </>
+  )
+}
+
+function NmapBody(props: { block: ToolBlock }) {
+  const v = () => (props.block.value as any) ?? {}
+  const hosts = () => (Array.isArray(v().hosts) ? (v().hosts as any[]) : [])
+  return (
+    <Show when={hosts().length} fallback={<pre class="term">{props.block.output || (v().timed_out ? 'scan timed out' : 'no hosts up')}</pre>}>
+      <div class="nmap">
+        <For each={hosts()}>
+          {(h) => (
+            <div class="nmap-host">
+              <div class="nh-head">
+                <span class="nh-addr">{String(h.address)}</span>
+                <Show when={h.hostname}><span class="nh-name">{String(h.hostname)}</span></Show>
+                <span class={`chip-sm ${h.status === 'up' ? 'ok' : ''}`}>{String(h.status)}</span>
+              </div>
+              <div class="ports">
+                <For each={(h.ports as any[]) ?? []}>
+                  {(p) => {
+                    const svc = [p.service, p.product, p.version].filter((x: unknown) => x).join(' ')
+                    return (
+                      <div class={`port ${p.state === 'open' ? 'open' : ''}`}>
+                        <span class="pp">{String(p.port)}/{String(p.protocol)}</span>
+                        <span class={`pstate ${p.state}`}>{String(p.state)}</span>
+                        <span class="psvc">{svc || '—'}</span>
+                      </div>
+                    )
+                  }}
+                </For>
+              </div>
+            </div>
+          )}
+        </For>
+      </div>
+    </Show>
+  )
+}
+
+function FindingBody(props: { block: ToolBlock }) {
+  const f = () => ((props.block.value as any)?.finding as any) ?? {}
+  const sev = () => String(f().severity ?? 'info').toLowerCase()
+  return (
+    <div class="finding">
+      <div class="fd-head">
+        <span class={`sev ${sev()}`}>{sev()}</span>
+        <span class="fd-title">{String(f().title ?? props.block.output)}</span>
+        <Show when={f().mitre}><span class="mitre">{String(f().mitre)}</span></Show>
+      </div>
+      <Show when={f().target}><div class="fd-target">{String(f().target)}</div></Show>
+      <Show when={f().description}><div class="fd-desc">{String(f().description)}</div></Show>
+      <Show when={f().evidence}><pre class="term small">{String(f().evidence)}</pre></Show>
+    </div>
+  )
+}
+
+function GenericBody(props: { block: ToolBlock }) {
+  return (
+    <Show when={props.block.output} fallback={<pre class="term small">{props.block.args}</pre>}>
+      <pre class="term">{props.block.output}</pre>
+    </Show>
+  )
+}
+
+function ToolBody(props: { block: ToolBlock }) {
+  return (
+    <Show when={props.block.state !== 'running'} fallback={<div class="tc-running"><span class="rdot" />working…</div>}>
+      <Switch fallback={<GenericBody block={props.block} />}>
+        <Match when={props.block.state === 'error'}><pre class="term err">{props.block.output || 'error'}</pre></Match>
+        <Match when={props.block.name === 'shell'}><ShellBody block={props.block} /></Match>
+        <Match when={props.block.name === 'nmap'}><NmapBody block={props.block} /></Match>
+        <Match when={props.block.name === 'http'}><HttpBody block={props.block} /></Match>
+        <Match when={props.block.name === 'read_file'}><ReadBody block={props.block} /></Match>
+        <Match when={props.block.name === 'write_file' || props.block.name === 'str_replace'}><EditBody block={props.block} /></Match>
+        <Match when={props.block.name === 'glob' || props.block.name === 'grep'}><SearchBody block={props.block} /></Match>
+        <Match when={props.block.name === 'add_finding'}><FindingBody block={props.block} /></Match>
+      </Switch>
+    </Show>
+  )
+}
+
+function ToolCardView(props: { block: ToolBlock }) {
+  const [open, setOpen] = createSignal(true)
+  const meta = () => toolMeta(props.block.name)
   const label = () => (props.block.state === 'running' ? 'running' : props.block.state === 'ok' ? 'done' : 'error')
   return (
-    <div class="toolcard">
-      <div class="head">
-        <span class="tname">{props.block.name}</span>
+    <div class={`toolcard ${props.block.state}`}>
+      <button class="tc-head" onClick={() => setOpen(!open())}>
+        <span class="tc-ico">{meta().icon()}</span>
+        <span class="tc-name">{meta().label}</span>
+        <Show when={argSummary(props.block)}><span class="tc-summary">{argSummary(props.block)}</span></Show>
         <span class={`state ${props.block.state}`}><span class="sd" />{label()}</span>
-      </div>
-      <div class="args">{props.block.args}</div>
+        <span class="tc-caret">{open() ? '▾' : '▸'}</span>
+      </button>
+      <Show when={open()}>
+        <div class="tc-body"><ToolBody block={props.block} /></div>
+      </Show>
     </div>
+  )
+}
+
+// ── conversation ──────────────────────────────────────────────────────────────
+function BlockView(props: { block: Block }) {
+  return (
+    <Switch>
+      <Match when={props.block.kind === 'text'}><Markdown text={(props.block as any).text} /></Match>
+      <Match when={props.block.kind === 'tool'}><ToolCardView block={props.block as ToolBlock} /></Match>
+      <Match when={props.block.kind === 'notice'}>
+        <div class="notice"><span class="ni"><IconSwitch /></span>{(props.block as any).text}</div>
+      </Match>
+    </Switch>
   )
 }
 
@@ -356,9 +800,7 @@ function Conversation() {
                 </Show>
                 <Show when={msg.role === 'assistant'}>
                   <div>
-                    <For each={msg.blocks}>
-                      {(b) => (b.kind === 'text' ? <div class="text">{b.text}</div> : <ToolCardView block={b} />)}
-                    </For>
+                    <For each={msg.blocks}>{(b) => <BlockView block={b} />}</For>
                     <Show when={running() && msg === conversation.list[conversation.list.length - 1]}><span class="cursor" /></Show>
                   </div>
                 </Show>

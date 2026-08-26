@@ -90,7 +90,7 @@ async fn main() {
                     let _ = std::io::stdout().flush();
                 }
                 Progress::ToolCall { name, args } => println!("\n→ {name} {args}"),
-                Progress::ToolResult { name, is_error } => {
+                Progress::ToolResult { name, is_error, .. } => {
                     println!("  {} {name}", if is_error { "[error]" } else { "[ok]" })
                 }
             },

@@ -209,7 +209,7 @@ self-contained task — the specialist does not see this conversation.",
                     let preview: String = args.chars().take(120).collect();
                     eprintln!("      · {label} → {name} {preview}");
                 }
-                Progress::ToolResult { name, is_error } => {
+                Progress::ToolResult { name, is_error, .. } => {
                     eprintln!("      · {label}   {} {name}", if is_error { "[error]" } else { "[ok]" });
                 }
             },

@@ -55,6 +55,47 @@ export function modelById(id: string): ModelInfo | undefined {
   return models().find((m) => m.id === id)
 }
 
+// ── preferences (persisted to localStorage) ──────────────────────────────────
+export type Theme = 'system' | 'dark' | 'light'
+
+function readPref<T extends string>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key)
+    return (v as T) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+function writePref(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    /* private mode / storage disabled — preference just won't persist */
+  }
+}
+
+const [theme, setThemeSignal] = createSignal<Theme>(readPref<Theme>('decibel.theme', 'dark'))
+export { theme }
+
+/** Apply a theme to the document root and persist it. `system` defers to the
+ * OS via `prefers-color-scheme` (no explicit attribute). */
+export function applyTheme(t: Theme): void {
+  setThemeSignal(t)
+  writePref('decibel.theme', t)
+  const root = document.documentElement
+  if (t === 'system') root.removeAttribute('data-theme')
+  else root.setAttribute('data-theme', t)
+}
+
+const [autoFallback, setAutoFallbackSignal] = createSignal<boolean>(
+  readPref<string>('decibel.autoFallback', 'on') !== 'off',
+)
+export { autoFallback }
+export function setAutoFallback(on: boolean): void {
+  setAutoFallbackSignal(on)
+  writePref('decibel.autoFallback', on ? 'on' : 'off')
+}
+
 // ── conversation ─────────────────────────────────────────────────────────────
 export interface TextBlock {
   kind: 'text'
@@ -65,8 +106,17 @@ export interface ToolBlock {
   name: string
   args: string
   state: 'running' | 'ok' | 'error'
+  /** The tool's rendered model-facing output text, once it settles. */
+  output?: string
+  /** The tool's canonical JSON value, for a structured card (nmap, http, …). */
+  value?: unknown
 }
-export type Block = TextBlock | ToolBlock
+/** A run-level system note shown inline (e.g. an automatic model fallback). */
+export interface NoticeBlock {
+  kind: 'notice'
+  text: string
+}
+export type Block = TextBlock | ToolBlock | NoticeBlock
 export interface Msg {
   role: 'user' | 'assistant'
   blocks: Block[]
@@ -75,6 +125,10 @@ export interface Msg {
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
+// The model actually driving the in-flight run — set only when a fallback swaps
+// models mid-run, so the chip reflects reality during the run WITHOUT mutating
+// the user's persistent choice. Cleared when the run ends; the chip then reverts.
+export const [activeModel, setActiveModel] = createSignal<string | undefined>()
 let controller: AbortController | undefined
 // Each run gets a monotonic id; only the active run's events are applied, so a
 // cancelled or superseded run can never write into the transcript or clobber
@@ -99,9 +153,20 @@ export async function send(text: string): Promise<void> {
 
   const runId = nextRunId++
   activeRunId = runId
+  setActiveModel(undefined)
   setRunning(true)
   controller = new AbortController()
-  await runPrompt(prompt, model, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+  try {
+    await runPrompt(prompt, model, runId, autoFallback(), (e) => applyEvent(idx, runId, e), controller.signal)
+  } finally {
+    // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
+    // with a done/error event, don't leave the spinner stuck — but only touch
+    // state if this run is still the active one (never clobber a newer run).
+    if (runId === activeRunId) {
+      setRunning(false)
+      setActiveModel(undefined)
+    }
+  }
 }
 
 export function cancel(): void {
@@ -111,11 +176,16 @@ export function cancel(): void {
   controller?.abort()
   controller = undefined
   setRunning(false)
+  setActiveModel(undefined)
 }
 
 function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): void {
   // Ignore events from a run that was cancelled or superseded by a newer one.
   if (runId !== activeRunId) return
+  // Keep the composer's model chip honest DURING the run without changing the
+  // user's saved choice: the fallback becomes the effective model until the run
+  // ends. Done outside the store producer (a signal write, not a block edit).
+  if (e.type === 'model_fallback') setActiveModel(e.to)
   setConversation(
     'list',
     idx,
@@ -136,9 +206,19 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
             const b = blocks[i]
             if (b.kind === 'tool' && b.name === e.name && b.state === 'running') {
               b.state = e.ok ? 'ok' : 'error'
+              b.output = e.output
+              b.value = e.value
               break
             }
           }
+          break
+        }
+        case 'model_fallback': {
+          // Record the switch inline. Keep any output already shown — a
+          // multi-step turn can complete a tool (e.g. an nmap card) before a
+          // later step's request fails — so appending, not wiping, avoids losing
+          // real results; the fallback model then continues below the notice.
+          blocks.push({ kind: 'notice', text: `switched to ${e.to} (${e.reason.toLowerCase()})` })
           break
         }
         case 'error':
@@ -150,5 +230,8 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
       }
     }),
   )
-  if (e.type === 'done' || e.type === 'error') setRunning(false)
+  if (e.type === 'done' || e.type === 'error') {
+    setRunning(false)
+    setActiveModel(undefined)
+  }
 }

@@ -86,7 +86,7 @@ async fn main() {
                     let preview: String = args.chars().take(160).collect();
                     println!("\n▶ {name} {preview}");
                 }
-                Progress::ToolResult { name, is_error } => {
+                Progress::ToolResult { name, is_error, .. } => {
                     println!("◀ {} {name}", if is_error { "[error]" } else { "[ok]" });
                 }
             },
