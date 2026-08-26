@@ -323,16 +323,19 @@
 .model-anchor {
   position: relative;
 }
+/* Centered popover so it never runs off-screen wherever the composer sits. */
 .model-panel {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  right: 0;
-  width: 460px;
-  max-height: 60vh;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: 74vh;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
   z-index: 40;
@@ -555,6 +558,7 @@
   position: fixed;
   inset: 0;
   z-index: 30;
+  background: rgba(0, 0, 0, 0.4);
 }
 
 /* ── settings modal ──────────────────────────────────────────────────────── */
