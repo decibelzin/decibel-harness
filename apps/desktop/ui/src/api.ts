@@ -2,6 +2,8 @@
 // preview they hit the proxied public OpenRouter catalog and mock the agent run,
 // so the whole UI is demonstrable without the backend or an API key.
 
+import { Channel, invoke } from '@tauri-apps/api/core'
+
 export interface ModelInfo {
   id: string
   name: string
@@ -11,7 +13,7 @@ export interface ModelInfo {
   input_modalities: string[]
 }
 
-/** A streamed event from a running turn. */
+/** A streamed event from a running turn. Matches the Rust `RunEvt`. */
 export type RunEvent =
   | { type: 'step'; n: number }
   | { type: 'token'; text: string }
@@ -20,8 +22,8 @@ export type RunEvent =
   | { type: 'done' }
   | { type: 'error'; message: string }
 
-function isTauri(): boolean {
-  return typeof (window as unknown as { __TAURI__?: unknown }).__TAURI__ !== 'undefined'
+export function isTauri(): boolean {
+  return typeof (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined'
 }
 
 function parseModel(entry: any): ModelInfo {
@@ -41,17 +43,26 @@ function parseModel(entry: any): ModelInfo {
 
 /** Fetch the live model catalog. */
 export async function fetchModels(): Promise<ModelInfo[]> {
-  if (isTauri()) {
-    const invoke = (window as any).__TAURI__.core.invoke
-    return await invoke('list_models')
-  }
+  if (isTauri()) return await invoke<ModelInfo[]>('list_models')
   const res = await fetch('/or/api/v1/models')
   if (!res.ok) throw new Error(`catalog HTTP ${res.status}`)
   const json = await res.json()
   return (json.data ?? []).map(parseModel)
 }
 
-/** Run one prompt, streaming events. Mocked in browser preview. */
+// ── API key (keyring in Tauri; no-op in browser preview) ─────────────────────
+export async function hasApiKey(): Promise<boolean> {
+  if (isTauri()) return await invoke<boolean>('has_api_key')
+  return false
+}
+export async function saveApiKey(key: string): Promise<void> {
+  if (isTauri()) await invoke('save_api_key', { key })
+}
+export async function deleteApiKey(): Promise<void> {
+  if (isTauri()) await invoke('delete_api_key')
+}
+
+/** Run one prompt, streaming events. Real in Tauri, mocked in browser preview. */
 export async function runPrompt(
   prompt: string,
   model: string,
@@ -59,10 +70,9 @@ export async function runPrompt(
   signal?: AbortSignal,
 ): Promise<void> {
   if (isTauri()) {
-    // Real path (wired next milestone): a Rust command streams events over the
-    // Tauri event bus. Placeholder until the backend command exists.
-    onEvent({ type: 'error', message: 'backend not wired yet in this build' })
-    onEvent({ type: 'done' })
+    const channel = new Channel<RunEvent>()
+    channel.onmessage = onEvent
+    await invoke('run_prompt', { prompt, model, onEvent: channel })
     return
   }
   await mockRun(prompt, model, onEvent, signal)
@@ -102,7 +112,7 @@ async function mockRun(
   await emitText(
     '\n\n**Summary:** 127.0.0.1 exposes SSH (OpenSSH) and HTTP (nginx). ' +
       'Next I would fingerprint the web app and test for common misconfigurations. ' +
-      '(This is a mocked run — wire the Tauri backend to drive the real agent.)',
+      '(This is a mocked run — the Tauri build drives the real agent.)',
   )
   onEvent({ type: 'done' })
 }

@@ -1,10 +1,12 @@
 import { createSignal, For, onMount, Show, type JSX } from 'solid-js'
 
 import './App.css'
-import type { ModelInfo } from './api'
+import { deleteApiKey, hasApiKey, saveApiKey, type ModelInfo } from './api'
 import {
   cancel,
   conversation,
+  settingsOpen,
+  setSettingsOpen,
   freeOnly,
   loadingModels,
   loadModels,
@@ -100,8 +102,69 @@ function Sidebar() {
         </div>
         <div class="ws-session active">New Session</div>
       </div>
-      <button class="settings"><IconGear /> Settings</button>
+      <button class="settings" onClick={() => setSettingsOpen(true)}><IconGear /> Settings</button>
     </aside>
+  )
+}
+
+function Settings() {
+  const [key, setKey] = createSignal('')
+  const [stored, setStored] = createSignal(false)
+  const [busy, setBusy] = createSignal(false)
+  hasApiKey().then(setStored)
+  const save = async () => {
+    if (!key().trim()) return
+    setBusy(true)
+    try {
+      await saveApiKey(key().trim())
+      setKey('')
+      setStored(await hasApiKey())
+    } finally {
+      setBusy(false)
+    }
+  }
+  const clear = async () => {
+    setBusy(true)
+    try {
+      await deleteApiKey()
+      setStored(await hasApiKey())
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div class="modal-backdrop" onClick={() => setSettingsOpen(false)}>
+      <div class="modal" onClick={(e) => e.stopPropagation()}>
+        <div class="m-head">
+          Settings
+          <button class="x" onClick={() => setSettingsOpen(false)}>✕</button>
+        </div>
+        <div class="m-body">
+          <div class="field-label">OpenRouter API key</div>
+          <div class="field-help">
+            Stored in your OS keyring, never in a file. Get a free key at{' '}
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
+          </div>
+          <div class="field-row">
+            <input
+              type="password"
+              placeholder="sk-or-v1-…"
+              value={key()}
+              onInput={(e) => setKey(e.currentTarget.value)}
+              onKeyDown={(e) => e.key === 'Enter' && save()}
+            />
+            <button class="btn primary" disabled={busy() || !key().trim()} onClick={save}>Save</button>
+            <Show when={stored()}>
+              <button class="btn danger" disabled={busy()} onClick={clear}>Clear</button>
+            </Show>
+          </div>
+          <div class={`key-status ${stored() ? 'set' : ''}`}>
+            <span class="kd" />
+            {stored() ? 'A key is stored in the keyring.' : 'No key set — the agent cannot run until you add one.'}
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -288,6 +351,7 @@ export default function App() {
           </div>
         </Show>
       </div>
+      <Show when={settingsOpen()}><Settings /></Show>
     </div>
   )
 }

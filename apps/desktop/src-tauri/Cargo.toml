@@ -1,0 +1,32 @@
+[package]
+name = "decibel-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Decibel — desktop red-team agent (Tauri shell)"
+
+# Own workspace so the heavy Tauri dependency tree stays out of the core
+# `cargo test --workspace`; it path-depends into the crate workspace above.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+keyring = "3"
+
+decibel-llm = { path = "../../../crates/decibel-llm" }
+decibel-core = { path = "../../../crates/decibel-core" }
+decibel-openrouter = { path = "../../../crates/decibel-openrouter" }
+decibel-tools = { path = "../../../crates/decibel-tools" }
+decibel-agent = { path = "../../../crates/decibel-agent" }
+decibel-offsec = { path = "../../../crates/decibel-offsec" }
+decibel-orchestrator = { path = "../../../crates/decibel-orchestrator" }
+
+[features]
+# Keep the default; a release build enables custom protocol etc via tauri.
+default = []

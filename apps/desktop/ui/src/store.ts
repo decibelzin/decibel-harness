@@ -64,6 +64,7 @@ export interface Msg {
 
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
 export const [running, setRunning] = createSignal(false)
+export const [settingsOpen, setSettingsOpen] = createSignal(false)
 let controller: AbortController | undefined
 
 export function newSession(): void {
