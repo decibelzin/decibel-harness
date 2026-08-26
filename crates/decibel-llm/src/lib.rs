@@ -10,6 +10,7 @@
 //! The shapes mirror the DeepSeek Harness (`dsh-llm`) vocabulary so the durable
 //! JSON is familiar; the code is an independent Rust implementation.
 
+pub mod adapter;
 pub mod assembler;
 pub mod content;
 pub mod ids;
@@ -17,6 +18,7 @@ pub mod message;
 pub mod options;
 pub mod stream;
 
+pub use adapter::{ChunkStream, LlmAdapter};
 pub use assembler::BlockAssembler;
 pub use content::ContentBlock;
 pub use ids::{CallId, MessageId, SessionId};

@@ -1,0 +1,26 @@
+[package]
+name = "decibel-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The agent loop: a thin driver that turns a model + a tool registry + a session
+# into a running ReAct turn. A turn opens, appends the user message, then runs
+# steps — each one model request plus the tools it calls — until the model stops
+# calling tools. Everything it does is a durable session event, so a turn is
+# fully reconstructable from the log. The provider is behind the LlmAdapter seam;
+# the tools are behind the registry; this crate names neither concretely.
+
+[dependencies]
+decibel-llm = { path = "../decibel-llm" }
+decibel-core = { path = "../decibel-core" }
+decibel-tools = { path = "../decibel-tools" }
+serde_json = { workspace = true }
+futures-util = "0.3"
+tokio-util = "0.7"
+
+[dev-dependencies]
+decibel-openrouter = { path = "../decibel-openrouter" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "process"] }
+dotenvy = "0.15"
+async-trait = "0.1"

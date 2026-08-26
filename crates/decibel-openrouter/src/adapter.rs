@@ -12,8 +12,8 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 
 use decibel_llm::{
-    ContentBlock, FinishReason, GenerateOptions, LlmFailure, Message, MessageSource, StreamChunk,
-    TokenUsage, ToolSchema,
+    ChunkStream, ContentBlock, FinishReason, GenerateOptions, LlmAdapter, LlmFailure, Message,
+    MessageSource, StreamChunk, TokenUsage, ToolSchema,
 };
 
 use crate::DEFAULT_BASE_URL;
@@ -154,6 +154,15 @@ impl OpenRouterAdapter {
                 reason: finish.unwrap_or(FinishReason::Stop),
             };
         }
+    }
+}
+
+impl LlmAdapter for OpenRouterAdapter {
+    /// Box the inherent stream behind the neutral seam. `self.stream(options)`
+    /// resolves to the inherent method (inherent methods win method-call
+    /// resolution), so this does not recurse.
+    fn stream(&self, options: GenerateOptions) -> ChunkStream {
+        Box::pin(self.stream(options))
     }
 }
 
