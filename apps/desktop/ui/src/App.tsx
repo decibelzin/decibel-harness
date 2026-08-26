@@ -77,7 +77,7 @@ function Sidebar() {
   return (
     <aside class="sidebar">
       <div class="brand">
-        <span class="logo"><Logo /></span>
+        <span class="logo"><Logo size={30} /></span>
         <span class="name">Decibel</span>
         <span class="pill">v0.1</span>
         <button class="collapse" title="Collapse"><IconCollapse /></button>
@@ -280,7 +280,7 @@ export default function App() {
           <div class="hero-wrap">
             <div class="glow" />
             <div class="hero">
-              <span class="logo"><Logo size={26} /></span>
+              <span class="logo"><Logo size={52} /></span>
               <span class="title">Into the Breach</span>
               <span class="preview">Preview</span>
             </div>
