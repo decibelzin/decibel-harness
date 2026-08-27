@@ -7,6 +7,8 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 export interface ModelInfo {
   id: string
   name: string
+  /** Backend that serves this model: 'deepseek' (paid API) or 'openrouter' (free). */
+  provider: string
   context_length: number
   is_free: boolean
   supports_tools: boolean
@@ -29,32 +31,36 @@ export function isTauri(): boolean {
   return typeof w.__TAURI_INTERNALS__ !== 'undefined' || typeof w.__TAURI__ !== 'undefined'
 }
 
-/** The DeepSeek catalog for the browser preview (the desktop app gets the same
- * list from the Rust `list_models` command). Kept in sync with the Rust
- * `deepseek_models()`. All are OpenAI-compatible and support tool calls. */
-const DEEPSEEK_MODELS: ModelInfo[] = [
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
-  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
-  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision (exp)', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text', 'image'] },
+/** The catalog for the browser preview (the desktop app gets the live list from
+ * the Rust `list_models`): the paid DeepSeek API models plus a representative set
+ * of the free DeepSeek-on-OpenRouter models. The real app fetches the OpenRouter
+ * free list live, so its ids/flags are authoritative. */
+const PREVIEW_MODELS: ModelInfo[] = [
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'deepseek', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'deepseek', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision (exp)', provider: 'deepseek', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text', 'image'] },
+  { id: 'deepseek/deepseek-chat-v3-0324:free', name: 'DeepSeek V3 0324 (free)', provider: 'openrouter', context_length: 163_840, is_free: true, supports_tools: true, input_modalities: ['text'] },
+  { id: 'deepseek/deepseek-r1-0528:free', name: 'DeepSeek R1 0528 (free)', provider: 'openrouter', context_length: 163_840, is_free: true, supports_tools: false, input_modalities: ['text'] },
+  { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1 (free)', provider: 'openrouter', context_length: 163_840, is_free: true, supports_tools: false, input_modalities: ['text'] },
 ]
 
 /** The model catalog. From the Rust backend in the app; the fixed list above in
  * the browser preview. */
 export async function fetchModels(): Promise<ModelInfo[]> {
   if (isTauri()) return await invoke<ModelInfo[]>('list_models')
-  return DEEPSEEK_MODELS
+  return PREVIEW_MODELS
 }
 
-// ── API key (DeepSeek key in the keyring in Tauri; no-op in browser preview) ──
-export async function hasApiKey(): Promise<boolean> {
-  if (isTauri()) return await invoke<boolean>('has_api_key')
+// ── API keys (per provider; keyring in Tauri, no-op in browser preview) ───────
+export async function hasApiKey(provider: string): Promise<boolean> {
+  if (isTauri()) return await invoke<boolean>('has_api_key', { provider })
   return false
 }
-export async function saveApiKey(key: string): Promise<void> {
-  if (isTauri()) await invoke('save_api_key', { key })
+export async function saveApiKey(provider: string, key: string): Promise<void> {
+  if (isTauri()) await invoke('save_api_key', { provider, key })
 }
-export async function deleteApiKey(): Promise<void> {
-  if (isTauri()) await invoke('delete_api_key')
+export async function deleteApiKey(provider: string): Promise<void> {
+  if (isTauri()) await invoke('delete_api_key', { provider })
 }
 
 /** Run one prompt, streaming events. Real in Tauri, mocked in browser preview.
@@ -63,6 +69,7 @@ export async function deleteApiKey(): Promise<void> {
 export async function runPrompt(
   prompt: string,
   model: string,
+  provider: string,
   runId: number,
   onEvent: (e: RunEvent) => void,
   signal?: AbortSignal,
@@ -75,7 +82,7 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    await invoke('run_prompt', { prompt, model, runId, onEvent: channel })
+    await invoke('run_prompt', { prompt, model, provider, runId, onEvent: channel })
     return
   }
   await mockRun(prompt, model, onEvent, signal)

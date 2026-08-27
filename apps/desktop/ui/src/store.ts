@@ -120,6 +120,8 @@ export async function send(text: string): Promise<void> {
   if (!prompt || running()) return
   const model = selectedModel()
   if (!model) return
+  // Route to the model's provider (DeepSeek API vs the free OpenRouter models).
+  const provider = modelById(model)?.provider ?? 'deepseek'
 
   setConversation('list', (l) => [...l, { role: 'user', blocks: [{ kind: 'text', text: prompt }] }])
   setConversation('list', (l) => [...l, { role: 'assistant', blocks: [] }])
@@ -130,7 +132,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch

@@ -13,9 +13,18 @@ pub mod catalog;
 pub mod error;
 
 pub use adapter::OpenRouterAdapter;
-pub use catalog::{deepseek_models, fetch_default_models, fetch_models, parse_catalog, ModelInfo};
+pub use catalog::{
+    deepseek_models, fetch_default_models, fetch_full_catalog, fetch_models,
+    openrouter_free_deepseek_models, parse_catalog, ModelInfo, PROVIDER_DEEPSEEK, PROVIDER_OPENROUTER,
+};
 pub use error::OpenRouterError;
 
 /// The DeepSeek API root (OpenAI-compatible; the adapter appends
-/// `/chat/completions`).
+/// `/chat/completions`). Also the adapter's default when no base URL is set.
 pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
+
+/// The DeepSeek API root (paid models). Same as [`DEFAULT_BASE_URL`].
+pub const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+
+/// The OpenRouter API root (free DeepSeek models + public model catalog).
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";

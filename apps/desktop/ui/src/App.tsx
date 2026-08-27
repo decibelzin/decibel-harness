@@ -130,21 +130,28 @@ function Sidebar() {
 // ── settings (tabbed page) ────────────────────────────────────────────────────
 type SettingsTab = 'models' | 'general' | 'appearance' | 'about'
 
-function ApiKeyField() {
+interface KeyFieldProps {
+  provider: string
+  label: string
+  placeholder: string
+  help: JSX.Element
+  note?: string
+}
+function ApiKeyField(props: KeyFieldProps) {
   const [key, setKey] = createSignal('')
   const [stored, setStored] = createSignal(false)
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | undefined>()
   const [saved, setSaved] = createSignal(false)
-  void hasApiKey().then(setStored).catch(() => {})
+  void hasApiKey(props.provider).then(setStored).catch(() => {})
   const save = async () => {
     const k = key().trim()
     if (!k) return
     setBusy(true); setError(undefined); setSaved(false)
     try {
-      await saveApiKey(k)
+      await saveApiKey(props.provider, k)
       setKey('')
-      setStored(await hasApiKey())
+      setStored(await hasApiKey(props.provider))
       setSaved(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -155,8 +162,8 @@ function ApiKeyField() {
   const clear = async () => {
     setBusy(true); setError(undefined); setSaved(false)
     try {
-      await deleteApiKey()
-      setStored(await hasApiKey())
+      await deleteApiKey(props.provider)
+      setStored(await hasApiKey(props.provider))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -165,12 +172,8 @@ function ApiKeyField() {
   }
   return (
     <div class="setting">
-      <div class="field-label">DeepSeek API key</div>
-      <div class="field-help">
-        Stored in your OS keyring, never in a file. Create a key at{' '}
-        <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com/api_keys</a>{' '}
-        (add credit under Top Up).
-      </div>
+      <div class="field-label">{props.label}</div>
+      <div class="field-help">{props.help}</div>
       <Show when={!isTauri()}>
         <div class="key-status" style={{ color: 'var(--warning)' }}>
           <span class="kd" style={{ background: 'var(--warning)' }} />
@@ -180,7 +183,7 @@ function ApiKeyField() {
       <div class="field-row">
         <input
           type="password"
-          placeholder="sk-or-v1-…"
+          placeholder={props.placeholder}
           value={key()}
           onInput={(e) => setKey(e.currentTarget.value)}
           onKeyDown={(e) => e.key === 'Enter' && save()}
@@ -204,7 +207,7 @@ function ApiKeyField() {
       </Show>
       <div class={`key-status ${stored() ? 'set' : ''}`}>
         <span class="kd" />
-        {stored() ? 'A key is stored in the keyring.' : 'No key set — the agent cannot run until you add one.'}
+        {stored() ? 'A key is stored in the keyring.' : (props.note ?? 'No key set.')}
       </div>
     </div>
   )
@@ -213,10 +216,34 @@ function ApiKeyField() {
 function ModelsTab() {
   return (
     <>
-      <ApiKeyField />
+      <ApiKeyField
+        provider="deepseek"
+        label="DeepSeek API key"
+        placeholder="sk-…"
+        note="No key set — the paid DeepSeek models can't run until you add one."
+        help={
+          <>
+            For the paid DeepSeek models. Stored in your OS keyring. Create a key at{' '}
+            <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com/api_keys</a>{' '}
+            (add credit under Top Up).
+          </>
+        }
+      />
+      <ApiKeyField
+        provider="openrouter"
+        label="OpenRouter API key"
+        placeholder="sk-or-v1-…"
+        note="No key set — the free DeepSeek (OpenRouter) models can't run until you add one."
+        help={
+          <>
+            For the free DeepSeek models served via OpenRouter. Stored in your OS keyring. Create a free key at{' '}
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
+          </>
+        }
+      />
       <div class="setting">
         <div class="field-label">Default model</div>
-        <div class="field-help">The DeepSeek model new runs start with.</div>
+        <div class="field-help">The model new runs start with. Paid DeepSeek models and free OpenRouter DeepSeek models are both listed.</div>
         <div class="filters embedded">
           <input class="search" placeholder="search models…" value={search()} onInput={(e) => setSearch(e.currentTarget.value)} />
           <button class="refresh" onClick={() => loadModels()}>{loadingModels() ? '…' : '↻'}</button>
@@ -248,8 +275,8 @@ function GeneralTab() {
   return (
     <>
       <div class="setting">
-        <div class="field-label">Provider</div>
-        <div class="field-help">Decibel runs on the DeepSeek API (paid). Pick a model in the composer's model chip or under Models &amp; Providers. Usage is billed to your DeepSeek account — add credit at platform.deepseek.com under Top Up.</div>
+        <div class="field-label">Providers</div>
+        <div class="field-help">Decibel runs DeepSeek models from two sources: the paid <b>DeepSeek API</b> (deepseek-v4-*, billed to your DeepSeek account) and the free <b>DeepSeek models on OpenRouter</b> (deepseek/*:free, rate-limited). Each needs its own key under Models &amp; Providers; the run routes to whichever the picked model belongs to.</div>
       </div>
       <div class="setting">
         <div class="field-label">Authority</div>
@@ -297,7 +324,8 @@ function AboutTab() {
       <p class="about-text">
         A lightweight desktop red-team / pentest agent. It drives a recon → analysis → exploitation →
         reporting loop over an offensive toolkit (shell, nmap, http, filesystem, search, findings),
-        powered by the DeepSeek API. No guardrails by design.
+        powered by DeepSeek models — the paid DeepSeek API plus the free DeepSeek models on
+        OpenRouter. No guardrails by design.
       </p>
       <div class="about-links">
         <a href="https://github.com/decibelzin/decibel-harness" target="_blank" rel="noreferrer">Repository</a>
@@ -350,6 +378,7 @@ function ModelBadges(props: { m: ModelInfo }) {
     <>
       <span class="badge ctx">{fmtCtx(props.m.context_length)}</span>
       <Show when={props.m.is_free}><span class="badge free">free</span></Show>
+      <Show when={props.m.provider === 'openrouter'}><span class="badge prov">openrouter</span></Show>
       <span class={`badge ${props.m.supports_tools ? 'tools' : 'notools'}`}>
         {props.m.supports_tools ? 'tools' : 'no tools'}
       </span>

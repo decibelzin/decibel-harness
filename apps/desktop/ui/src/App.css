@@ -444,6 +444,11 @@
   background: rgba(242, 90, 90, 0.12);
   color: var(--danger);
 }
+.badge.prov {
+  background: var(--surface-3);
+  color: var(--text-faint);
+  text-transform: lowercase;
+}
 
 /* ── conversation (active state) ─────────────────────────────────────────── */
 .conversation {

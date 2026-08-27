@@ -1,23 +1,33 @@
 //! The model catalog — the data behind the model picker.
 //!
-//! For DeepSeek this is the fixed [`deepseek_models`] list (its `/models`
-//! endpoint needs a key and carries no capability metadata). The generic
-//! [`fetch_models`]/[`parse_catalog`] helpers (an OpenAI/OpenRouter-style
-//! `data[]` of models with pricing + `supported_parameters`) are retained for
-//! any provider whose catalog does expose that metadata.
+//! Two providers now feed one list: the paid **DeepSeek** API (the fixed
+//! [`deepseek_models`] list — its `/models` endpoint needs a key and carries no
+//! capability metadata) and the free **DeepSeek-on-OpenRouter** models (fetched
+//! from OpenRouter's public catalog via [`fetch_models`]/[`parse_catalog`], an
+//! OpenAI-style `data[]` with pricing + `supported_parameters`). Each model
+//! carries a [`ModelInfo::provider`] tag so a run routes to the right endpoint
+//! and key. [`fetch_full_catalog`] returns both.
 
 use serde_json::Value;
 
 use crate::error::OpenRouterError;
+use crate::OPENROUTER_BASE_URL;
+
+/// Which backend serves a model — decides the endpoint and API key a run uses.
+pub const PROVIDER_DEEPSEEK: &str = "deepseek";
+/// The OpenRouter provider tag (free DeepSeek models).
+pub const PROVIDER_OPENROUTER: &str = "openrouter";
 
 /// One model as the picker needs it: identity, context size, cost, and the two
 /// capabilities that decide whether it is usable as an agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelInfo {
-    /// The id passed to the API (e.g. `x-ai/grok-4-fast:free`).
+    /// The id passed to the API (e.g. `deepseek-v4-flash` or `deepseek/deepseek-r1:free`).
     pub id: String,
     /// Human-readable name for the picker.
     pub name: String,
+    /// Backend that serves this model: [`PROVIDER_DEEPSEEK`] or [`PROVIDER_OPENROUTER`].
+    pub provider: String,
     /// Maximum combined request+response context in tokens.
     pub context_length: u64,
     /// Raw prompt price per token, as the API reports it ("0" for free).
@@ -80,6 +90,8 @@ impl ModelInfo {
         Some(ModelInfo {
             id,
             name,
+            // parse_catalog is only used for OpenRouter's catalog.
+            provider: PROVIDER_OPENROUTER.to_string(),
             context_length,
             prompt_price,
             completion_price,
@@ -145,6 +157,7 @@ pub fn deepseek_models() -> Vec<ModelInfo> {
     let model = |id: &str, name: &str, prompt: &str, completion: &str, vision: bool| ModelInfo {
         id: id.to_string(),
         name: name.to_string(),
+        provider: PROVIDER_DEEPSEEK.to_string(),
         context_length: 1_000_000,
         prompt_price: prompt.to_string(),
         completion_price: completion.to_string(),
@@ -163,10 +176,37 @@ pub fn deepseek_models() -> Vec<ModelInfo> {
     ]
 }
 
-/// The catalog the picker shows — the fixed [`deepseek_models`] list (no network
-/// call; DeepSeek's `/models` needs a key and lacks the metadata the picker needs).
+/// The paid DeepSeek models only (no network). Used by the CLI demos, which run
+/// against the DeepSeek API directly.
 pub async fn fetch_default_models() -> Result<Vec<ModelInfo>, OpenRouterError> {
     Ok(deepseek_models())
+}
+
+/// The free DeepSeek models offered on OpenRouter (`deepseek/*:free`), from
+/// OpenRouter's public `/models` endpoint (no key). Each is tagged with the
+/// `openrouter` provider so a run routes there with the OpenRouter key. Sorted
+/// by context desc. A fetch failure yields an empty list, not an error, so the
+/// paid DeepSeek models still show if OpenRouter is unreachable.
+pub async fn openrouter_free_deepseek_models() -> Vec<ModelInfo> {
+    let client = reqwest::Client::new();
+    let Ok(models) = fetch_models(&client, OPENROUTER_BASE_URL).await else {
+        return Vec::new();
+    };
+    let mut free: Vec<ModelInfo> = models
+        .into_iter()
+        .filter(|m| m.is_free && m.id.starts_with("deepseek/"))
+        .collect();
+    free.sort_by(|a, b| b.context_length.cmp(&a.context_length));
+    free
+}
+
+/// The full picker catalog: the paid DeepSeek API models first, then the free
+/// DeepSeek-on-OpenRouter models. This is what the desktop app's `list_models`
+/// returns.
+pub async fn fetch_full_catalog() -> Result<Vec<ModelInfo>, OpenRouterError> {
+    let mut catalog = deepseek_models();
+    catalog.extend(openrouter_free_deepseek_models().await);
+    Ok(catalog)
 }
 
 #[cfg(test)]

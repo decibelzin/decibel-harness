@@ -21,9 +21,30 @@ use decibel_offsec::register_all;
 use decibel_openrouter::OpenRouterAdapter;
 use decibel_tools::ToolRegistry;
 
-/// Keyring service/account the DeepSeek key is stored under.
+/// Keyring service the provider keys are stored under (account = provider tag).
 const KEY_SERVICE: &str = "decibel-harness";
-const KEY_ACCOUNT: &str = "deepseek";
+
+/// Per-provider (keyring account, env-var, API base URL). The DeepSeek API is
+/// the default; `openrouter` serves the free DeepSeek models.
+fn provider_config(provider: &str) -> (&'static str, &'static str, &'static str) {
+    match provider {
+        "openrouter" => (
+            "openrouter",
+            "OPENROUTER_API_KEY",
+            decibel_openrouter::OPENROUTER_BASE_URL,
+        ),
+        _ => ("deepseek", "DEEPSEEK_API_KEY", decibel_openrouter::DEEPSEEK_BASE_URL),
+    }
+}
+
+/// Human label for a provider, for messages.
+fn provider_label(provider: &str) -> &'static str {
+    if provider == "openrouter" {
+        "OpenRouter"
+    } else {
+        "DeepSeek"
+    }
+}
 
 /// The default offensive-security persona for a single-agent run.
 const SYSTEM: &str = "You are Decibel, an autonomous offensive-security (red-team) agent operating \
@@ -46,6 +67,7 @@ struct RunRegistry(Mutex<HashMap<u64, TurnSignal>>);
 struct ModelDto {
     id: String,
     name: String,
+    provider: String,
     context_length: u64,
     is_free: bool,
     supports_tools: bool,
@@ -66,28 +88,29 @@ enum RunEvt {
     Error { message: String },
 }
 
-/// Resolve the DeepSeek key: OS keyring first, then the `DEEPSEEK_API_KEY`
-/// environment variable (dev convenience).
-fn resolve_key() -> Result<String, String> {
-    if let Ok(entry) = keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT) {
+/// Resolve a provider's key: OS keyring first, then its env var (dev convenience).
+fn resolve_key(provider: &str) -> Result<String, String> {
+    let (account, env, _) = provider_config(provider);
+    if let Ok(entry) = keyring::Entry::new(KEY_SERVICE, account) {
         if let Ok(pw) = entry.get_password() {
             if !pw.trim().is_empty() {
                 return Ok(pw);
             }
         }
     }
-    if let Ok(env) = std::env::var("DEEPSEEK_API_KEY") {
-        if !env.trim().is_empty() {
-            return Ok(env);
+    if let Ok(value) = std::env::var(env) {
+        if !value.trim().is_empty() {
+            return Ok(value);
         }
     }
-    Err("No DeepSeek API key set — add it in Settings.".into())
+    Err(format!("No {} API key set — add it in Settings.", provider_label(provider)))
 }
 
-/// Fetch the live model catalog (public endpoint; no key required).
+/// Fetch the model catalog: the paid DeepSeek models plus the free
+/// DeepSeek-on-OpenRouter models (the OpenRouter fetch needs no key).
 #[tauri::command]
 async fn list_models() -> Result<Vec<ModelDto>, String> {
-    let models = decibel_openrouter::fetch_default_models()
+    let models = decibel_openrouter::fetch_full_catalog()
         .await
         .map_err(|e| e.to_string())?;
     Ok(models
@@ -95,6 +118,7 @@ async fn list_models() -> Result<Vec<ModelDto>, String> {
         .map(|m| ModelDto {
             id: m.id,
             name: m.name,
+            provider: m.provider,
             context_length: m.context_length,
             is_free: m.is_free,
             supports_tools: m.supports_tools,
@@ -103,27 +127,29 @@ async fn list_models() -> Result<Vec<ModelDto>, String> {
         .collect())
 }
 
-/// Whether an OpenRouter key is available (keyring or env).
+/// Whether a key for `provider` is available (keyring or env).
 #[tauri::command]
-fn has_api_key() -> bool {
-    resolve_key().is_ok()
+fn has_api_key(provider: String) -> bool {
+    resolve_key(&provider).is_ok()
 }
 
-/// Store the OpenRouter key in the OS keyring.
+/// Store a provider's key in the OS keyring (account = provider tag).
 #[tauri::command]
-fn save_api_key(key: String) -> Result<(), String> {
+fn save_api_key(provider: String, key: String) -> Result<(), String> {
     let key = key.trim().to_string();
     if key.is_empty() {
         return Err("key is empty".into());
     }
-    let entry = keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).map_err(|e| e.to_string())?;
+    let (account, _, _) = provider_config(&provider);
+    let entry = keyring::Entry::new(KEY_SERVICE, account).map_err(|e| e.to_string())?;
     entry.set_password(&key).map_err(|e| e.to_string())
 }
 
-/// Remove the stored OpenRouter key.
+/// Remove a provider's stored key.
 #[tauri::command]
-fn delete_api_key() -> Result<(), String> {
-    let entry = keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).map_err(|e| e.to_string())?;
+fn delete_api_key(provider: String) -> Result<(), String> {
+    let (account, _, _) = provider_config(&provider);
+    let entry = keyring::Entry::new(KEY_SERVICE, account).map_err(|e| e.to_string())?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),
@@ -142,19 +168,21 @@ fn cancel_run(run_id: u64, runs: State<'_, RunRegistry>) {
     }
 }
 
-/// Run one prompt with the full offensive toolkit against the chosen DeepSeek
-/// model, streaming events to the frontend through `on_event`. A terminal error
-/// is delivered as an `error` event. The run registers a cancellation token
-/// under `run_id` so `cancel_run` can stop it cooperatively.
+/// Run one prompt with the full offensive toolkit against the chosen model,
+/// routed to `provider`'s endpoint + key (DeepSeek API, or OpenRouter for the
+/// free DeepSeek models). Streams events through `on_event`; a terminal error is
+/// delivered as an `error` event. The run registers a cancellation token under
+/// `run_id` so `cancel_run` can stop it cooperatively.
 #[tauri::command]
 async fn run_prompt(
     prompt: String,
     model: String,
+    provider: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
     runs: State<'_, RunRegistry>,
 ) -> Result<(), String> {
-    let key = match resolve_key() {
+    let key = match resolve_key(&provider) {
         Ok(k) => k,
         Err(e) => {
             let _ = on_event.send(RunEvt::Error { message: e });
@@ -163,7 +191,8 @@ async fn run_prompt(
         }
     };
 
-    let adapter = OpenRouterAdapter::new(Some(key));
+    let (_, _, base_url) = provider_config(&provider);
+    let adapter = OpenRouterAdapter::new(Some(key)).with_base_url(base_url);
 
     // Register this run's cancellation token so cancel_run can reach it.
     let cancel = TurnSignal::new();
@@ -175,7 +204,7 @@ async fn run_prompt(
     let _findings = register_all(&mut registry);
     let n = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
     let mut session = Session::new(format!("ui-{n}"));
-    let config = AgentConfig::new("deepseek", &model).with_system(SYSTEM).with_max_tokens(1200);
+    let config = AgentConfig::new(&provider, &model).with_system(SYSTEM).with_max_tokens(1200);
     let message = Message::human(format!("u-{n}"), vec![ContentBlock::text(prompt)]);
 
     let sink = on_event.clone();
@@ -213,10 +242,18 @@ async fn run_prompt(
     // A user Stop surfaces as an error mid-stream; don't report that as a failure.
     if let StopReason::Error(failure) = outcome.stop_reason {
         if !cancel.is_cancelled() {
+            let daily_capped = failure.message.contains("per-day")
+                || failure.message.contains("free-models-per-day");
             let out_of_credit = failure.status == Some(402)
                 || failure.code == "QUOTA_EXCEEDED"
                 || failure.message.contains("Insufficient Balance");
-            let message = if out_of_credit {
+            let message = if provider == "openrouter" && daily_capped {
+                format!(
+                    "OpenRouter free daily quota exhausted: {}. Wait for the ~00:00 UTC reset, or \
+                     add ~$10 credit at openrouter.ai/credits, or pick a paid DeepSeek model.",
+                    failure.message
+                )
+            } else if provider != "openrouter" && out_of_credit {
                 format!(
                     "DeepSeek API: insufficient balance — add credit at platform.deepseek.com/top_up. ({})",
                     failure.message
