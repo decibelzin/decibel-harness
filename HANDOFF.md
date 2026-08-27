@@ -22,12 +22,15 @@ remote `decibelzin/decibel-harness`, branch `main`). User speaks **Portuguese**.
 > - **`deepseek`** (paid DeepSeek API, `https://api.deepseek.com`, key from
 >   platform.deepseek.com): `deepseek-v4-flash` (default), `deepseek-v4-pro`,
 >   `deepseek-v4-flash-vision-exp` — all 1M context, all support tool calls.
-> - **`openrouter`** (free DeepSeek models, `https://openrouter.ai/api/v1`, key
->   from openrouter.ai/keys): the `deepseek/*:free` models fetched live from
->   OpenRouter's public catalog (rate-limited; some `:free` R1 models lack tools).
+> - **`openrouter`** (free tool-capable models, `https://openrouter.ai/api/v1`,
+>   key from openrouter.ai/keys): fetched live from OpenRouter's public catalog.
+>   **OpenRouter has NO free DeepSeek models anymore** (all `deepseek/*` there are
+>   paid), so this free tier is other providers — MiniMax, GLM, Gemma, Nemotron,
+>   … (~15, all tool-capable; `thinkingmachines/*` gated ones are skipped).
 >
 > History: started on OpenRouter free models → pivoted to DeepSeek-paid-only →
-> then re-added the free DeepSeek-on-OpenRouter models alongside the paid ones.
+> then re-added the free tool-capable OpenRouter models alongside the paid ones
+> (the user asked for "free DeepSeek from OpenRouter", but none exist there now).
 > The adapter crate is still **named** `decibel-openrouter` (internal label; it's
 > a generic OpenAI-compatible adapter pointed per-run at either base URL).
 
@@ -50,7 +53,7 @@ npm run app        # tauri dev — opens the native window
 Then **Settings → Models & Providers** and paste the key(s) for the models you'll
 use (stored in Windows Credential Manager): a **DeepSeek** key
 (platform.deepseek.com/api_keys, add credit under Top Up) for the paid models,
-and/or an **OpenRouter** key (openrouter.ai/keys) for the free `deepseek/*:free`
+and/or an **OpenRouter** key (openrouter.ai/keys) for the free tool-capable
 models. Pick a model in the composer's model chip. Dev overrides: `DEEPSEEK_API_KEY`
 / `OPENROUTER_API_KEY` env vars (or a gitignored workspace-root `.env`).
 
@@ -73,10 +76,11 @@ CLI demos: `cargo run -p decibel-offsec --example redteam "recon 127.0.0.1"` and
 - **Paid DeepSeek models are billed** — every run spends real credit; HTTP 402 /
   `Insufficient Balance` → an actionable "add credit at platform.deepseek.com/top_up"
   error. Off-peak vs peak pricing (off-peak ~50% cheaper) + a cache-hit discount.
-- **Free OpenRouter models are rate-limited / partly gated** — a per-day 429 →
-  a "wait for reset / add credit / pick a paid DeepSeek model" message; some
-  `:free` R1 models don't support tools (the picker flags "no tools" — an agent
-  turn needs tools). There is NO auto-fallback across models anymore.
+- **Free OpenRouter models are rate-limited** — a per-day 429 → a "wait for
+  reset / add credit / pick a paid DeepSeek model" message. The catalog filters
+  to free + tool-capable and drops gated `thinkingmachines/*` (AUTH), so the
+  listed free models are usable as agents. There is NO auto-fallback anymore, so
+  a rate-limited free model just errors — switch models and retry.
 - **Two keys, per provider** — keyring accounts `deepseek` and `openrouter` under
   service `decibel-harness`; `run_prompt(provider,…)` picks the base URL + key.
 - **Tauri layout:** `src-tauri` at `apps/desktop/src-tauri` (sibling of `ui`). The
@@ -94,8 +98,8 @@ crates/
   decibel-core      event-sourced Session log + surface projection + JSONL persist
   decibel-openrouter  OpenAI-compatible streaming adapter (pointed per-run at the
                     DeepSeek or OpenRouter base URL via .with_base_url); catalog:
-                    deepseek_models() (paid) + openrouter_free_deepseek_models()
-                    (fetched); fetch_full_catalog() = both. ModelInfo.provider tags
+                    deepseek_models() (paid) + openrouter_free_tool_models()
+                    (fetched free tool-capable); fetch_full_catalog() = both. .provider tags
                     each. [crate name is legacy — it's a generic adapter now]
   decibel-tools     Tool trait (canonical value + pure render) + registry + pipeline
   decibel-agent     run_turn / run_turn_observed (live Progress), AgentConfig, TurnSignal
@@ -142,19 +146,24 @@ the same fact the model saw (canonical value + pure render, per dsh).
 - [x] **Pivot to the paid DeepSeek API** (2026-08-26) — DeepSeek base URL + key +
       fixed 3-model catalog; removed the free-model auto-fallback, `ModelFallback`
       event, `activeModel`, and the free/tools catalog filters.
-- [x] **Multi-provider: added the free DeepSeek-on-OpenRouter models** (2026-08-26)
+- [x] **Multi-provider: added the free tool-capable OpenRouter models** (2026-08-26)
       — `ModelInfo.provider` tag; `fetch_full_catalog()` = paid DeepSeek +
-      `openrouter_free_deepseek_models()` (live from OpenRouter); `provider_config`
-      + per-provider `resolve_key`/`has/save/delete_api_key(provider)`;
-      `run_prompt(provider,…)` routes base URL + key; two key fields in Settings;
-      provider badge in the picker. Verified: 6 models listed (3 paid + 3 free),
-      both key fields present, 61 tests + all builds green. **Not yet run live**
-      against either provider here (needs the user's keys/credit).
+      `openrouter_free_tool_models()` (live from OpenRouter — free + tools, minus
+      gated `thinkingmachines/*`); `provider_config` + per-provider
+      `resolve_key`/`has/save/delete_api_key(provider)`; `run_prompt(provider,…)`
+      routes base URL + key; two key fields in Settings; provider badge in the
+      picker. **Discovered OpenRouter no longer lists ANY free DeepSeek models**
+      (all `deepseek/*` there are paid), so — per the user — the free tier is all
+      tool-capable free models (MiniMax/GLM/Gemma/Nemotron/…). Verified live:
+      `fetch_full_catalog()` returns 18 (3 paid DeepSeek + 15 free OpenRouter);
+      preview + both key fields OK; 61 tests + all builds green. **Not yet run
+      live** against either provider here (needs the user's keys/credit).
 
-**Verified:** 61 core tests green; Tauri crate + UI build; browser preview drives
-the tool cards, markdown, theme switch, and prefs end-to-end, lists all 6 models
-(3 paid DeepSeek + 3 free OpenRouter, with provider badges), and shows both key
-fields. Not yet run live against DeepSeek or OpenRouter here (needs keys/credit).
+**Verified:** 61 core tests green; Tauri crate + UI build; the live
+`fetch_full_catalog()` (what the app's `list_models` calls) returns 18 models
+(3 paid DeepSeek + 15 free OpenRouter, all tool-capable); browser preview drives
+the tool cards, markdown, theme, prefs, lists paid + free with provider badges,
+and shows both key fields. Not yet run live against either provider (needs keys).
 
 ### Review findings fixed (during the feature work, before the pivot)
 1. `run_turn_observed` now re-checks cancel at the top of the step loop, so Stop

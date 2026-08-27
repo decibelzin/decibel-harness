@@ -233,17 +233,18 @@ function ModelsTab() {
         provider="openrouter"
         label="OpenRouter API key"
         placeholder="sk-or-v1-…"
-        note="No key set — the free DeepSeek (OpenRouter) models can't run until you add one."
+        note="No key set — the free OpenRouter models can't run until you add one."
         help={
           <>
-            For the free DeepSeek models served via OpenRouter. Stored in your OS keyring. Create a free key at{' '}
+            For the free, tool-capable models served via OpenRouter (OpenRouter has no free DeepSeek
+            models, so these are other providers). Stored in your OS keyring. Create a free key at{' '}
             <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
           </>
         }
       />
       <div class="setting">
         <div class="field-label">Default model</div>
-        <div class="field-help">The model new runs start with. Paid DeepSeek models and free OpenRouter DeepSeek models are both listed.</div>
+        <div class="field-help">The model new runs start with. Paid DeepSeek models and free OpenRouter models are both listed.</div>
         <div class="filters embedded">
           <input class="search" placeholder="search models…" value={search()} onInput={(e) => setSearch(e.currentTarget.value)} />
           <button class="refresh" onClick={() => loadModels()}>{loadingModels() ? '…' : '↻'}</button>
@@ -276,7 +277,7 @@ function GeneralTab() {
     <>
       <div class="setting">
         <div class="field-label">Providers</div>
-        <div class="field-help">Decibel runs DeepSeek models from two sources: the paid <b>DeepSeek API</b> (deepseek-v4-*, billed to your DeepSeek account) and the free <b>DeepSeek models on OpenRouter</b> (deepseek/*:free, rate-limited). Each needs its own key under Models &amp; Providers; the run routes to whichever the picked model belongs to.</div>
+        <div class="field-help">Decibel runs models from two sources: the paid <b>DeepSeek API</b> (deepseek-v4-*, billed to your DeepSeek account) and the <b>free tool-capable models on OpenRouter</b> (rate-limited; OpenRouter has no free DeepSeek models, so these are other providers — MiniMax, GLM, Gemma, …). Each needs its own key under Models &amp; Providers; the run routes to whichever the picked model belongs to.</div>
       </div>
       <div class="setting">
         <div class="field-label">Authority</div>
@@ -324,8 +325,8 @@ function AboutTab() {
       <p class="about-text">
         A lightweight desktop red-team / pentest agent. It drives a recon → analysis → exploitation →
         reporting loop over an offensive toolkit (shell, nmap, http, filesystem, search, findings),
-        powered by DeepSeek models — the paid DeepSeek API plus the free DeepSeek models on
-        OpenRouter. No guardrails by design.
+        powered by the paid DeepSeek API plus the free tool-capable models on OpenRouter.
+        No guardrails by design.
       </p>
       <div class="about-links">
         <a href="https://github.com/decibelzin/decibel-harness" target="_blank" rel="noreferrer">Repository</a>

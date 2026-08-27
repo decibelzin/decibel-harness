@@ -15,7 +15,7 @@ pub mod error;
 pub use adapter::OpenRouterAdapter;
 pub use catalog::{
     deepseek_models, fetch_default_models, fetch_full_catalog, fetch_models,
-    openrouter_free_deepseek_models, parse_catalog, ModelInfo, PROVIDER_DEEPSEEK, PROVIDER_OPENROUTER,
+    openrouter_free_tool_models, parse_catalog, ModelInfo, PROVIDER_DEEPSEEK, PROVIDER_OPENROUTER,
 };
 pub use error::OpenRouterError;
 

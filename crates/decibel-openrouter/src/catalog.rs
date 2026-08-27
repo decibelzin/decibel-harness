@@ -182,30 +182,33 @@ pub async fn fetch_default_models() -> Result<Vec<ModelInfo>, OpenRouterError> {
     Ok(deepseek_models())
 }
 
-/// The free DeepSeek models offered on OpenRouter (`deepseek/*:free`), from
-/// OpenRouter's public `/models` endpoint (no key). Each is tagged with the
-/// `openrouter` provider so a run routes there with the OpenRouter key. Sorted
-/// by context desc. A fetch failure yields an empty list, not an error, so the
-/// paid DeepSeek models still show if OpenRouter is unreachable.
-pub async fn openrouter_free_deepseek_models() -> Vec<ModelInfo> {
+/// The free, tool-capable models on OpenRouter (any provider), from OpenRouter's
+/// public `/models` endpoint (no key). OpenRouter no longer lists any *free*
+/// DeepSeek models, so this is the free tier at large — usable as an agent
+/// because each supports tool calling. `thinkingmachines/*` is skipped (gated to
+/// approved apps: a generic client gets an AUTH error). Each is tagged with the
+/// `openrouter` provider so a run routes there with the OpenRouter key. Sorted by
+/// context desc. A fetch failure yields an empty list, not an error, so the paid
+/// DeepSeek models still show if OpenRouter is unreachable.
+pub async fn openrouter_free_tool_models() -> Vec<ModelInfo> {
     let client = reqwest::Client::new();
     let Ok(models) = fetch_models(&client, OPENROUTER_BASE_URL).await else {
         return Vec::new();
     };
     let mut free: Vec<ModelInfo> = models
         .into_iter()
-        .filter(|m| m.is_free && m.id.starts_with("deepseek/"))
+        .filter(|m| m.is_free && m.supports_tools && !m.id.starts_with("thinkingmachines/"))
         .collect();
     free.sort_by(|a, b| b.context_length.cmp(&a.context_length));
     free
 }
 
 /// The full picker catalog: the paid DeepSeek API models first, then the free
-/// DeepSeek-on-OpenRouter models. This is what the desktop app's `list_models`
+/// tool-capable OpenRouter models. This is what the desktop app's `list_models`
 /// returns.
 pub async fn fetch_full_catalog() -> Result<Vec<ModelInfo>, OpenRouterError> {
     let mut catalog = deepseek_models();
-    catalog.extend(openrouter_free_deepseek_models().await);
+    catalog.extend(openrouter_free_tool_models().await);
     Ok(catalog)
 }
 

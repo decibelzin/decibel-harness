@@ -1,18 +1,19 @@
-//! Print the DeepSeek model catalog — exactly the data the desktop model picker
-//! shows (a fixed list; no network call).
+//! Print the model catalog the desktop picker shows: the paid DeepSeek API models
+//! plus the free tool-capable OpenRouter models (fetched live from OpenRouter's
+//! public `/models`; no key needed).
 //!
 //!     cargo run -p decibel-openrouter --example catalog_demo
 //!
 //! Pass `all` to list every model, including any without tool calling:
 //!     cargo run -p decibel-openrouter --example catalog_demo all
 
-use decibel_openrouter::fetch_default_models;
+use decibel_openrouter::fetch_full_catalog;
 
 #[tokio::main]
 async fn main() {
     let show_all = std::env::args().nth(1).as_deref() == Some("all");
 
-    let models = match fetch_default_models().await {
+    let models = match fetch_full_catalog().await {
         Ok(models) => models,
         Err(err) => {
             eprintln!("failed to fetch catalog: {err}");
@@ -24,7 +25,7 @@ async fn main() {
     let tool_capable: Vec<&_> = models.iter().filter(|m| m.supports_tools).collect();
 
     println!(
-        "DeepSeek catalog: {total} models, {} WITH tool calling.\n",
+        "Model catalog: {total} models, {} WITH tool calling.\n",
         tool_capable.len()
     );
 
@@ -37,9 +38,9 @@ async fn main() {
     listed.sort_by(|a, b| b.context_length.cmp(&a.context_length));
 
     let heading = if show_all {
-        "All DeepSeek models (tools = can act as an agent):"
+        "All models (tools = can act as an agent):"
     } else {
-        "DeepSeek models that can call tools (usable as a red-team agent):"
+        "Models that can call tools (usable as a red-team agent):"
     };
     println!("{heading}");
     println!("{:<44} {:>9}  {:<5}  {}", "MODEL", "CONTEXT", "TOOLS", "INPUT");

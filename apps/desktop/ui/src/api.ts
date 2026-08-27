@@ -33,15 +33,16 @@ export function isTauri(): boolean {
 
 /** The catalog for the browser preview (the desktop app gets the live list from
  * the Rust `list_models`): the paid DeepSeek API models plus a representative set
- * of the free DeepSeek-on-OpenRouter models. The real app fetches the OpenRouter
- * free list live, so its ids/flags are authoritative. */
+ * of the free, tool-capable OpenRouter models. The real app fetches OpenRouter's
+ * free list live, so its ids/flags are authoritative — OpenRouter has no free
+ * DeepSeek models, so the free tier here is other providers. */
 const PREVIEW_MODELS: ModelInfo[] = [
   { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', provider: 'deepseek', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
   { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', provider: 'deepseek', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
   { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision (exp)', provider: 'deepseek', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text', 'image'] },
-  { id: 'deepseek/deepseek-chat-v3-0324:free', name: 'DeepSeek V3 0324 (free)', provider: 'openrouter', context_length: 163_840, is_free: true, supports_tools: true, input_modalities: ['text'] },
-  { id: 'deepseek/deepseek-r1-0528:free', name: 'DeepSeek R1 0528 (free)', provider: 'openrouter', context_length: 163_840, is_free: true, supports_tools: false, input_modalities: ['text'] },
-  { id: 'deepseek/deepseek-r1:free', name: 'DeepSeek R1 (free)', provider: 'openrouter', context_length: 163_840, is_free: true, supports_tools: false, input_modalities: ['text'] },
+  { id: 'minimax/minimax-m3:free', name: 'MiniMax M3 (free)', provider: 'openrouter', context_length: 1_048_576, is_free: true, supports_tools: true, input_modalities: ['text'] },
+  { id: 'z-ai/glm-5.2:free', name: 'GLM 5.2 (free)', provider: 'openrouter', context_length: 256_000, is_free: true, supports_tools: true, input_modalities: ['text'] },
+  { id: 'google/gemma-4-31b-it:free', name: 'Gemma 4 31B (free)', provider: 'openrouter', context_length: 262_144, is_free: true, supports_tools: true, input_modalities: ['text'] },
 ]
 
 /** The model catalog. From the Rust backend in the app; the fixed list above in
