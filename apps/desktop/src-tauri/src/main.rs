@@ -19,7 +19,8 @@ use tauri::{AppHandle, Manager, State};
 use decibel_agent::{run_turn, run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
 use decibel_core::{persist, EventKind, Session, SurfaceIntent};
 use decibel_llm::{ContentBlock, LlmAdapter, Message, MessageSource};
-use decibel_offsec::{register_named, FindingStore, ALL_TOOLS};
+use decibel_mcp::{register_mcp_server, McpClient, McpServerConfig};
+use decibel_offsec::{register_named, FindingStore, Scope, ScopePolicy, ShieldPolicy, ALL_TOOLS};
 use decibel_openrouter::OpenRouterAdapter;
 use decibel_orchestrator::{build_engagement, orchestrator_system};
 use decibel_tools::ToolRegistry;
@@ -151,6 +152,76 @@ fn is_current_session(
         .unwrap_or(false)
 }
 
+/// Live MCP tool servers configured in Settings. `configs` is the operator's
+/// server list (persisted alongside the frontend's localStorage copy); `clients`
+/// keeps the probe connections from `set_mcp_servers` alive so a warm connection
+/// (and its subprocess) survives between turns. Each `run_prompt` still opens its
+/// own short-lived clients for the turn (held for that turn's lifetime), so the
+/// stored clients are only the validation/keep-warm handles.
+#[derive(Default)]
+struct McpState {
+    configs: Mutex<Vec<McpServerConfig>>,
+    clients: tokio::sync::Mutex<Vec<Arc<McpClient>>>,
+}
+
+/// One MCP server as the frontend configures it (maps to `McpServerConfig`).
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct McpServerConfigDto {
+    name: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    /// Extra child-process env vars, as `[key, value]` pairs (optional; the UI
+    /// leaves this empty, but it round-trips for completeness).
+    #[serde(default)]
+    env: Vec<(String, String)>,
+}
+
+impl From<McpServerConfigDto> for McpServerConfig {
+    fn from(d: McpServerConfigDto) -> Self {
+        McpServerConfig {
+            name: d.name,
+            command: d.command,
+            args: d.args,
+            env: d.env,
+        }
+    }
+}
+
+impl From<&McpServerConfig> for McpServerConfigDto {
+    fn from(c: &McpServerConfig) -> Self {
+        McpServerConfigDto {
+            name: c.name.clone(),
+            command: c.command.clone(),
+            args: c.args.clone(),
+            env: c.env.clone(),
+        }
+    }
+}
+
+/// The result of probing one configured MCP server (returned by `set_mcp_servers`).
+#[derive(Serialize, Clone)]
+struct McpProbeResult {
+    name: String,
+    ok: bool,
+    tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Convert the operator's engagement-scope text (one target per line, or
+/// comma-separated) into the `{ "targets": [...] }` JSON that `Scope::parse`
+/// consumes. An empty result yields an unenforced (inert) scope.
+fn scope_to_json(raw: &str) -> String {
+    let targets: Vec<String> = raw
+        .split(|c: char| c == '\n' || c == '\r' || c == ',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    serde_json::json!({ "targets": targets }).to_string()
+}
+
 /// One model as the picker needs it (matches the frontend `ModelInfo`).
 #[derive(Serialize, Clone)]
 struct ModelDto {
@@ -271,12 +342,14 @@ async fn run_prompt(
     workspace: Option<String>,
     mode: String,
     access: String,
+    scope: Option<String>,
     image: Option<String>,
     session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
     runs: State<'_, RunRegistry>,
     sessions: State<'_, Sessions>,
+    mcp: State<'_, McpState>,
 ) -> Result<(), String> {
     let key = match resolve_key(&provider) {
         Ok(k) => k,
@@ -321,6 +394,38 @@ async fn run_prompt(
         findings
     };
     let _findings = findings;
+
+    // Safety envelope for any EXECUTING run (act, read-only, and orchestrate —
+    // never plan, which runs no tools):
+    //  - the prompt-injection SHIELD (a post-policy) frames every tool result's
+    //    model-facing text as untrusted DATA;
+    //  - the Rules-of-Engagement SCOPE gate (a pre-policy) refuses out-of-scope
+    //    targets. An empty/None scope leaves the gate inert.
+    // MCP clients opened for this run are kept alive here for the turn's lifetime
+    // (dropping a client kills its subprocess, unregistering its tools mid-run).
+    let mut _mcp_clients: Vec<Arc<McpClient>> = Vec::new();
+    if !plan {
+        registry.add_post_policy(std::sync::Arc::new(ShieldPolicy::default()));
+        if let Some(scope_text) = scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            let parsed = Scope::parse(&scope_to_json(scope_text));
+            registry.add_pre_policy(std::sync::Arc::new(ScopePolicy::new(parsed)));
+        }
+        // Register every configured MCP server's remote tools into this run's
+        // registry so the agent can call them. A server that fails to connect is
+        // surfaced as a non-fatal notice; the run proceeds with the rest.
+        let configs = mcp.configs.lock().map(|c| c.clone()).unwrap_or_default();
+        for cfg in &configs {
+            match register_mcp_server(&mut registry, cfg).await {
+                Ok(client) => _mcp_clients.push(client),
+                Err(e) => {
+                    let _ = on_event.send(RunEvt::Error {
+                        message: format!("MCP server `{}` unavailable: {e}", cfg.name),
+                    });
+                }
+            }
+        }
+    }
+
     // Lock this conversation's session for the whole turn so the model sees prior
     // turns and a concurrent run/compact on the same conversation serializes
     // behind us instead of forking a blank session.
@@ -409,6 +514,55 @@ async fn run_prompt(
     }
     let _ = on_event.send(RunEvt::Done);
     Ok(())
+}
+
+/// (Re)configure the external MCP tool servers. Each server is connected in a
+/// throwaway probe registry to validate it and discover its tool names; the
+/// configs are stored and the successful connections kept alive (warm) in state.
+/// Returns a per-server `{ name, ok, tools, error? }` so the UI can show each
+/// server's discovered tool count or its connection error. Later `run_prompt`
+/// turns register these servers' tools into the run's own registry.
+#[tauri::command]
+async fn set_mcp_servers(
+    servers: Vec<McpServerConfigDto>,
+    mcp: State<'_, McpState>,
+) -> Result<Vec<McpProbeResult>, String> {
+    let configs: Vec<McpServerConfig> = servers.into_iter().map(Into::into).collect();
+    let mut results = Vec::with_capacity(configs.len());
+    let mut live_clients = Vec::new();
+    for cfg in &configs {
+        let mut probe = ToolRegistry::new();
+        match register_mcp_server(&mut probe, cfg).await {
+            Ok(client) => {
+                let tools: Vec<String> = probe.schemas().into_iter().map(|s| s.name).collect();
+                live_clients.push(client); // keep the connection (subprocess) alive
+                results.push(McpProbeResult { name: cfg.name.clone(), ok: true, tools, error: None });
+            }
+            Err(e) => {
+                results.push(McpProbeResult {
+                    name: cfg.name.clone(),
+                    ok: false,
+                    tools: Vec::new(),
+                    error: Some(e),
+                });
+            }
+        }
+    }
+    // Store the configs (used by run_prompt) and replace the warm-client set.
+    if let Ok(mut c) = mcp.configs.lock() {
+        *c = configs;
+    }
+    *mcp.clients.lock().await = live_clients;
+    Ok(results)
+}
+
+/// The currently-configured MCP servers (for the Settings list on startup).
+#[tauri::command]
+fn list_mcp_servers(mcp: State<'_, McpState>) -> Vec<McpServerConfigDto> {
+    mcp.configs
+        .lock()
+        .map(|c| c.iter().map(McpServerConfigDto::from).collect())
+        .unwrap_or_default()
 }
 
 /// Whether `path` is an existing directory — used to validate a chosen workspace
@@ -786,6 +940,7 @@ fn main() {
         .setup(|app| {
             app.manage(RunRegistry::default());
             app.manage(Sessions::default());
+            app.manage(McpState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -802,7 +957,9 @@ fn main() {
             list_sessions,
             load_session,
             delete_session,
-            rename_session
+            rename_session,
+            set_mcp_servers,
+            list_mcp_servers
         ])
         .run(tauri::generate_context!())
         .expect("error while running Decibel");

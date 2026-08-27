@@ -29,6 +29,7 @@ decibel-tools = { path = "../../../crates/decibel-tools" }
 decibel-agent = { path = "../../../crates/decibel-agent" }
 decibel-offsec = { path = "../../../crates/decibel-offsec" }
 decibel-orchestrator = { path = "../../../crates/decibel-orchestrator" }
+decibel-mcp = { path = "../../../crates/decibel-mcp" }
 
 [features]
 # Keep the default; a release build enables custom protocol etc via tauri.

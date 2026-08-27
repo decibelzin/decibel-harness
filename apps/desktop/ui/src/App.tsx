@@ -1,7 +1,7 @@
 import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
-import { deleteApiKey, hasApiKey, isTauri, pathIsDir, pickFolder, saveApiKey, type ModelInfo, type SessionMeta } from './api'
+import { deleteApiKey, hasApiKey, isTauri, listMcpServers, pathIsDir, pickFolder, saveApiKey, setMcpServers, type McpProbeResult, type ModelInfo, type SessionMeta } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
 import {
   access,
@@ -11,7 +11,11 @@ import {
   COMMANDS,
   composerDraft,
   conversation,
+  engagementScope,
+  findings,
+  findingsOpen,
   isCommand,
+  mcpServers,
   mode,
   modelPickerOpen,
   openSession,
@@ -20,9 +24,12 @@ import {
   removeSession,
   renameSessionTitle,
   runSlashCommand,
+  saveMcpServers,
   sessionLoading,
   sessions,
   setAccess,
+  setEngagementScope,
+  setFindingsOpen,
   setMode,
   setPendingImage,
   setComposerDraft,
@@ -49,6 +56,9 @@ import {
   workspaceName,
   workspacePanelOpen,
   type Block,
+  type Finding,
+  type McpServer,
+  type Mode,
   type SlashCommand,
   type ToolBlock,
 } from './store'
@@ -118,6 +128,7 @@ const IconGlobe = () => svg(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18M
 const IconShield = () => svg(<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z" />, 15)
 const IconWrench = () => svg(<path d="M14 6a4 4 0 0 0-5 5L4 16l4 4 5-5a4 4 0 0 0 5-5l-3 3-2-2z" />, 15)
 const IconSwitch = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points="18 2 18 7 13 7" /><path d="M20 12a8 8 0 0 1-14 5" /><polyline points="6 22 6 17 11 17" /></>, 13)
+const IconFlag = () => svg(<><line x1="5" y1="21" x2="5" y2="3" /><path d="M5 4h12l-2.5 4L17 12H5" /></>, 16)
 
 // ── sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar() {
@@ -199,13 +210,58 @@ function Sidebar() {
           <div class="sess-empty">No saved sessions yet — start one below.</div>
         </Show>
       </div>
+      <button class="findings-btn" onClick={() => setFindingsOpen(true)}>
+        <IconFlag /> Findings
+        <Show when={findings().length}><span class="fbadge">{findings().length}</span></Show>
+      </button>
       <button class="settings" onClick={() => setSettingsOpen(true)}><IconGear /> Settings</button>
     </aside>
   )
 }
 
+// ── findings drawer (live, severity-sorted view over the transcript) ──────────
+function FindingsPanel() {
+  return (
+    <div class="modal-backdrop findings-back" onClick={() => setFindingsOpen(false)}>
+      <div class="findings-drawer" onClick={(e) => e.stopPropagation()}>
+        <div class="fp-head">
+          <span class="fp-ico"><IconFlag /></span>
+          <span class="fp-title">Findings</span>
+          <span class="fp-count">{findings().length}</span>
+          <button class="x" onClick={() => setFindingsOpen(false)}>✕</button>
+        </div>
+        <div class="fp-body">
+          <Show
+            when={findings().length}
+            fallback={
+              <div class="fp-empty">
+                No findings yet. As the agent records confirmed weaknesses with
+                {' '}<code>add_finding</code> / <code>record_finding</code>, they appear here — sorted by severity.
+              </div>
+            }
+          >
+            <For each={findings()}>
+              {(f: Finding) => (
+                <div class="fp-item">
+                  <div class="fp-item-head">
+                    <span class={`sev ${f.severity}`}>{f.severity}</span>
+                    <span class="fp-item-title">{f.title}</span>
+                    <Show when={f.mitre}><span class="mitre">{f.mitre}</span></Show>
+                  </div>
+                  <Show when={f.target}><div class="fd-target">{f.target}</div></Show>
+                  <Show when={f.description}><div class="fd-desc">{f.description}</div></Show>
+                </div>
+              )}
+            </For>
+          </Show>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── settings (tabbed page) ────────────────────────────────────────────────────
-type SettingsTab = 'models' | 'general' | 'appearance' | 'about'
+type SettingsTab = 'models' | 'general' | 'mcp' | 'appearance' | 'about'
 
 interface KeyFieldProps {
   provider: string
@@ -350,6 +406,7 @@ function ModelsTab() {
 }
 
 function GeneralTab() {
+  const scopeTargets = () => engagementScope().split(/[\n,]/).map((t) => t.trim()).filter((t) => t !== '')
   return (
     <>
       <div class="setting">
@@ -357,10 +414,137 @@ function GeneralTab() {
         <div class="field-help">Decibel runs models from two sources: the paid <b>DeepSeek API</b> (deepseek-v4-*, billed to your DeepSeek account) and the <b>free tool-capable models on OpenRouter</b> (rate-limited; OpenRouter has no free DeepSeek models, so these are other providers — MiniMax, GLM, Gemma, …). Each needs its own key under Models &amp; Providers; the run routes to whichever the picked model belongs to.</div>
       </div>
       <div class="setting">
+        <div class="field-label">Engagement scope (Rules of Engagement)</div>
+        <div class="field-help">
+          Authorized targets — IPs, CIDRs, or domains, one per line (or comma-separated). When set, the agent
+          refuses any tool call or shell egress aimed outside this list. Leave empty for <b>no RoE restriction</b>
+          {' '}(every target allowed).
+        </div>
+        <textarea
+          class="scope-input"
+          rows={4}
+          placeholder={'10.0.0.0/24\nexample.com\n192.168.1.10'}
+          value={engagementScope()}
+          onInput={(e) => setEngagementScope(e.currentTarget.value)}
+        />
+        <div class={`key-status ${scopeTargets().length ? 'set' : ''}`}>
+          <span class="kd" />
+          {scopeTargets().length
+            ? `RoE enforced — ${scopeTargets().length} target${scopeTargets().length === 1 ? '' : 's'} in scope.`
+            : 'No scope set — no RoE restriction.'}
+        </div>
+      </div>
+      <div class="setting">
         <div class="field-label">Authority</div>
         <div class="field-help">Decibel runs with full shell, filesystem, and network authority by design — there is no sandbox. Only run it against systems you own or are authorized to test. Secret-looking environment variables are scrubbed from spawned processes so keys never leak into context.</div>
       </div>
     </>
+  )
+}
+
+function McpTab() {
+  const [list, setList] = createSignal<McpServer[]>(mcpServers().map((s) => ({ ...s, args: [...s.args] })))
+  const [results, setResults] = createSignal<McpProbeResult[]>([])
+  const [busy, setBusy] = createSignal(false)
+  const [err, setErr] = createSignal<string | undefined>()
+
+  // Reconcile with the backend's configured servers on open (keeps the UI list in
+  // sync with what run_prompt will actually use). Falls back to the persisted list.
+  onMount(async () => {
+    try {
+      const backend = await listMcpServers()
+      if (backend.length) setList(backend.map((s) => ({ name: s.name, command: s.command, args: [...s.args] })))
+    } catch {
+      /* browser preview — keep the persisted list */
+    }
+  })
+
+  const update = (i: number, patch: Partial<McpServer>) =>
+    setList(list().map((s, j) => (j === i ? { ...s, ...patch } : s)))
+  const add = () => setList([...list(), { name: '', command: '', args: [] }])
+  const remove = (i: number) => setList(list().filter((_, j) => j !== i))
+  const resultFor = (name: string) => results().find((r) => r.name === name)
+
+  const connect = async () => {
+    const clean = list()
+      .map((s) => ({ name: s.name.trim(), command: s.command.trim(), args: s.args.filter((a) => a.trim() !== '') }))
+      .filter((s) => s.name && s.command)
+    saveMcpServers(clean) // persist the config list to localStorage
+    setList(clean.map((s) => ({ ...s, args: [...s.args] })))
+    setBusy(true)
+    setErr(undefined)
+    try {
+      setResults(await setMcpServers(clean.map((s) => ({ name: s.name, command: s.command, args: s.args }))))
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div class="setting">
+      <div class="field-label">MCP servers</div>
+      <div class="field-help">
+        External Model Context Protocol tool servers (HexStrike AI, Kali-MCP, …). Each is spawned over stdio and its
+        tools become available to the agent (named <code>mcp_&lt;name&gt;_…</code>) on non-plan runs. Set the launch
+        command, then Connect to validate it and discover its tools.
+      </div>
+      <Show when={!isTauri()}>
+        <div class="key-status" style={{ color: 'var(--warning)' }}>
+          <span class="kd" style={{ background: 'var(--warning)' }} />
+          Browser preview — MCP servers only connect in the desktop app (npm run app).
+        </div>
+      </Show>
+      <div class="mcp-list">
+        <For each={list()}>
+          {(s, i) => {
+            const r = () => resultFor(s.name.trim())
+            return (
+              <div class="mcp-row">
+                <div class="mcp-fields">
+                  <input class="mcp-name" placeholder="name" value={s.name} onInput={(e) => update(i(), { name: e.currentTarget.value })} />
+                  <input class="mcp-cmd" placeholder="command (e.g. python)" value={s.command} onInput={(e) => update(i(), { command: e.currentTarget.value })} />
+                  <input
+                    class="mcp-args"
+                    placeholder="args (space-separated)"
+                    value={s.args.join(' ')}
+                    onInput={(e) => update(i(), { args: e.currentTarget.value.split(/\s+/).filter((a) => a !== '') })}
+                  />
+                  <button class="mcp-del" title="Remove server" onClick={() => remove(i())}>✕</button>
+                </div>
+                <Show when={r()}>
+                  {(res) => (
+                    <div class={`mcp-result ${res().ok ? 'ok' : 'bad'}`}>
+                      <span class="kd" />
+                      <Show
+                        when={res().ok}
+                        fallback={<span>failed: {res().error}</span>}
+                      >
+                        <span>
+                          connected — {res().tools.length} tool{res().tools.length === 1 ? '' : 's'}
+                          <Show when={res().tools.length}>: {res().tools.slice(0, 8).join(', ')}{res().tools.length > 8 ? ', …' : ''}</Show>
+                        </span>
+                      </Show>
+                    </div>
+                  )}
+                </Show>
+              </div>
+            )
+          }}
+        </For>
+        <Show when={list().length === 0}>
+          <div class="mcp-empty">No MCP servers configured. Add one below.</div>
+        </Show>
+      </div>
+      <div class="mcp-actions">
+        <button class="btn" onClick={add}><span class="ico"><IconAdd /></span> Add server</button>
+        <button class="btn primary" disabled={busy() || !isTauri()} onClick={connect}>{busy() ? 'Connecting…' : 'Connect / test'}</button>
+      </div>
+      <Show when={err()}>
+        <div class="key-status" style={{ color: 'var(--danger)' }}><span class="kd" style={{ background: 'var(--danger)' }} />{err()}</div>
+      </Show>
+    </div>
   )
 }
 
@@ -418,6 +602,7 @@ function Settings() {
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'models', label: 'Models & Providers' },
     { id: 'general', label: 'General' },
+    { id: 'mcp', label: 'MCP Servers' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'about', label: 'About' },
   ]
@@ -440,6 +625,7 @@ function Settings() {
             <Switch>
               <Match when={tab() === 'models'}><ModelsTab /></Match>
               <Match when={tab() === 'general'}><GeneralTab /></Match>
+              <Match when={tab() === 'mcp'}><McpTab /></Match>
               <Match when={tab() === 'appearance'}><AppearanceTab /></Match>
               <Match when={tab() === 'about'}><AboutTab /></Match>
             </Switch>
@@ -708,10 +894,11 @@ function Composer() {
         <ChipDropdown
           icon={<span class="ico"><IconMode /></span>}
           value={mode()}
-          onSelect={(v) => setMode(v as 'act' | 'plan')}
+          onSelect={(v) => setMode(v as Mode)}
           options={[
             { value: 'act', label: 'Act mode', desc: 'Run tools and act on the target' },
             { value: 'plan', label: 'Plan mode', desc: 'Propose a plan; execute nothing' },
+            { value: 'orchestrate', label: 'Orchestrate', desc: 'Multi-agent: delegates to specialists' },
           ]}
         />
       </div>
@@ -1163,6 +1350,7 @@ export default function App() {
       </div>
       <Show when={settingsOpen()}><Settings /></Show>
       <Show when={workspacePanelOpen()}><WorkspacePanel /></Show>
+      <Show when={findingsOpen()}><FindingsPanel /></Show>
     </div>
   )
 }

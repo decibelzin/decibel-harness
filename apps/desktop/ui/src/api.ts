@@ -74,6 +74,7 @@ export async function runPrompt(
   workspace: string,
   mode: string,
   access: string,
+  scope: string,
   image: string,
   sessionId: string,
   runId: number,
@@ -88,7 +89,8 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    // `image` = a data: URL for a vision model ('' = none).
+    // `image` = a data: URL for a vision model ('' = none). `scope` = the RoE
+    // authorized-target text ('' = no restriction).
     await invoke('run_prompt', {
       prompt,
       model,
@@ -96,6 +98,7 @@ export async function runPrompt(
       workspace: workspace || null,
       mode,
       access,
+      scope: scope || null,
       image: image || null,
       sessionId,
       runId,
@@ -104,6 +107,31 @@ export async function runPrompt(
     return
   }
   await mockRun(prompt, model, onEvent, signal)
+}
+
+// ── MCP servers (Tauri; no-op in browser preview) ────────────────────────────
+export interface McpServerConfigDto {
+  name: string
+  command: string
+  args: string[]
+  env?: [string, string][]
+}
+export interface McpProbeResult {
+  name: string
+  ok: boolean
+  tools: string[]
+  error?: string
+}
+/** (Re)configure + connect the MCP servers; returns each server's discovered
+ * tools or its connection error. No-op-ish in the browser preview (no backend). */
+export async function setMcpServers(servers: McpServerConfigDto[]): Promise<McpProbeResult[]> {
+  if (isTauri()) return await invoke<McpProbeResult[]>('set_mcp_servers', { servers })
+  return servers.map((s) => ({ name: s.name, ok: false, tools: [], error: 'MCP needs the desktop app' }))
+}
+/** The MCP servers currently configured in the backend. Empty in browser preview. */
+export async function listMcpServers(): Promise<McpServerConfigDto[]> {
+  if (isTauri()) return await invoke<McpServerConfigDto[]>('list_mcp_servers')
+  return []
 }
 
 /** Whether `path` is an existing directory (validates a chosen workspace). */

@@ -101,13 +101,49 @@ export function workspaceName(): string {
   return w ? (w.split(/[\\/]/).pop() || w) : ''
 }
 
-// Run mode: 'act' executes tools; 'plan' proposes a plan and runs nothing.
-export type Mode = 'act' | 'plan'
+// Run mode: 'act' executes tools; 'plan' proposes a plan and runs nothing;
+// 'orchestrate' runs the multi-agent engagement (delegates to specialists).
+export type Mode = 'act' | 'plan' | 'orchestrate'
 const [mode, setModeSignal] = createSignal<Mode>(readPref<Mode>('decibel.mode', 'act'))
 export { mode }
 export function setMode(m: Mode): void {
   setModeSignal(m)
   writePref('decibel.mode', m)
+}
+
+// Engagement scope (Rules of Engagement): authorized targets, one per line (or
+// comma-separated) — IPs, CIDRs, or domains. Empty = no RoE restriction. Threaded
+// to the backend where it installs a ScopePolicy pre-gate. Persisted like the
+// workspace so it survives restarts.
+const [engagementScope, setScopeSignal] = createSignal<string>(readPref<string>('decibel.scope', ''))
+export { engagementScope }
+export function setEngagementScope(s: string): void {
+  setScopeSignal(s)
+  writePref('decibel.scope', s)
+}
+
+// ── MCP servers (persisted config list; also synced to the backend) ──────────
+export interface McpServer {
+  name: string
+  command: string
+  args: string[]
+}
+function readMcpServers(): McpServer[] {
+  try {
+    const raw = localStorage.getItem('decibel.mcp')
+    const v = raw ? JSON.parse(raw) : []
+    return Array.isArray(v) ? v : []
+  } catch {
+    return []
+  }
+}
+const [mcpServers, setMcpServersSignal] = createSignal<McpServer[]>(readMcpServers())
+export { mcpServers }
+/** Persist the MCP server config list (localStorage). The backend is synced
+ * separately via `setMcpServers` from api.ts when the user hits Connect. */
+export function saveMcpServers(list: McpServer[]): void {
+  setMcpServersSignal(list)
+  writePref('decibel.mcp', JSON.stringify(list))
 }
 
 // Access preset: 'full' = every tool; 'readonly' = recon/inspection only (no
@@ -149,6 +185,8 @@ export interface Msg {
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
+// Drives the Findings drawer (a live, severity-sorted view over the transcript).
+export const [findingsOpen, setFindingsOpen] = createSignal(false)
 // Drives the composer's model picker so /model can open it from anywhere.
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false)
 // Opens the workspace-directory picker (from the composer chip or the sidebar).
@@ -197,7 +235,7 @@ function mapDisplayMsg(d: DisplayMsg): Msg {
     role,
     blocks: d.blocks.map((b) =>
       b.kind === 'tool'
-        ? { kind: 'tool', name: b.name ?? '', args: b.args ?? '', state: (b.state as any) ?? 'ok', output: b.output }
+        ? { kind: 'tool', name: b.name ?? '', args: b.args ?? '', state: (b.state as any) ?? 'ok', output: b.output != null ? stripUntrusted(b.output) : b.output }
         : { kind: 'text', text: b.text ?? '' },
     ),
   }
@@ -280,7 +318,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, workspace(), mode(), access(), image, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, workspace(), mode(), access(), engagementScope(), image, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch
@@ -296,6 +334,26 @@ export function cancel(): void {
   controller?.abort()
   controller = undefined
   setRunning(false)
+}
+
+// The prompt-injection shield (backend ShieldPolicy) wraps each tool result's
+// model-facing text in an untrusted envelope. These mirror the Rust constants in
+// crates/decibel-offsec/src/shield/mod.rs so the UI can show clean tool output
+// while the model still receives the wrapped, injection-framed version.
+const UNTRUSTED_OPEN_PREFIX = '<untrusted_tool_output'
+const UNTRUSTED_CLOSE = '</untrusted_tool_output>'
+const UNTRUSTED_SEP = '\n---\n'
+/** Inverse of the backend's `tag_untrusted` for display: if `s` is a tagged
+ * block, return the inner tool content; otherwise return `s` unchanged. Defensive
+ * — strips only when both markers are present (the header banner is discarded). */
+function stripUntrusted(s: string): string {
+  const t = s.trim()
+  if (t.startsWith(UNTRUSTED_OPEN_PREFIX) && t.endsWith(UNTRUSTED_CLOSE)) {
+    const a = t.indexOf(UNTRUSTED_SEP)
+    const b = t.lastIndexOf(UNTRUSTED_SEP)
+    if (a !== -1 && b > a) return t.slice(a + UNTRUSTED_SEP.length, b)
+  }
+  return s
 }
 
 function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): void {
@@ -321,7 +379,9 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
             const b = blocks[i]
             if (b.kind === 'tool' && b.name === e.name && b.state === 'running') {
               b.state = e.ok ? 'ok' : 'error'
-              b.output = e.output
+              // Strip the shield's untrusted envelope for a clean transcript; the
+              // structured `value` is untouched by the shield, so cards still render.
+              b.output = stripUntrusted(e.output)
               b.value = e.value
               break
             }
@@ -342,6 +402,47 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
     // The turn was just persisted server-side; refresh the sidebar's session list.
     if (e.type === 'done') void refreshSessions()
   }
+}
+
+// ── findings (derived live from the transcript) ───────────────────────────────
+export interface Finding {
+  title: string
+  severity: string
+  description?: string
+  target?: string
+  mitre?: string
+}
+/** Severity rank for sorting (critical → info); unknown severities sort last. */
+const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
+function sevRank(s: string): number {
+  return SEV_RANK[s.toLowerCase()] ?? 5
+}
+
+/** Scan the conversation for finding tool-cards (`add_finding` / `record_finding`)
+ * and return them aggregated + severity-sorted. A live derived view: reading
+ * `conversation.list` makes it reactive, so the drawer updates as findings land. */
+export function findings(): Finding[] {
+  const out: Finding[] = []
+  for (const msg of conversation.list) {
+    for (const b of msg.blocks) {
+      if (b.kind !== 'tool') continue
+      if (b.name !== 'add_finding' && b.name !== 'record_finding') continue
+      const f = (b.value as { finding?: Partial<Finding> } | undefined)?.finding
+      if (!f) continue
+      out.push({
+        title: String(f.title ?? b.output ?? 'finding'),
+        severity: String(f.severity ?? 'info').toLowerCase(),
+        description: f.description ? String(f.description) : undefined,
+        target: f.target ? String(f.target) : undefined,
+        mitre: f.mitre ? String(f.mitre) : undefined,
+      })
+    }
+  }
+  // Stable severity sort (critical first); equal severities keep discovery order.
+  return out
+    .map((f, i) => [f, i] as const)
+    .sort((a, b) => sevRank(a[0].severity) - sevRank(b[0].severity) || a[1] - b[1])
+    .map(([f]) => f)
 }
 
 // ── slash commands ────────────────────────────────────────────────────────────
