@@ -53,11 +53,14 @@ struct Session {
     /// Live output stream.
     tx: broadcast::Sender<String>,
     seq: AtomicU64,
+    /// Whether the session shell is POSIX (bash/sh) vs cmd — decides the
+    /// completion-marker script syntax.
+    posix: bool,
 }
 
 impl Session {
     async fn open(workspace: &PathBuf) -> Result<Self, String> {
-        let mut cmd = interactive_shell();
+        let (mut cmd, posix) = interactive_shell();
         cmd.current_dir(workspace)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -81,6 +84,7 @@ impl Session {
             cursor: StdMutex::new(0),
             tx,
             seq: AtomicU64::new(0),
+            posix,
         })
     }
 
@@ -104,10 +108,10 @@ impl Session {
         let marker = format!("__DCP_DONE_{seq}__");
         let start = self.snapshot().len();
 
-        let script = if cfg!(windows) {
-            format!("{command}\r\necho {marker}:%errorlevel%\r\n")
-        } else {
+        let script = if self.posix {
             format!("{command}\nprintf '%s:%s\\n' {marker} $?\n")
+        } else {
+            format!("{command}\r\necho {marker}:%errorlevel%\r\n")
         };
         self.write_line(&script).await?;
 
@@ -202,16 +206,52 @@ where
     });
 }
 
-/// Spawn an interactive shell that reads commands from its (piped) stdin.
-fn interactive_shell() -> Command {
-    if cfg!(windows) {
+/// Locate Git Bash on Windows so a session runs POSIX commands (what the model
+/// writes) instead of cmd.
+#[cfg(windows)]
+fn windows_bash() -> Option<PathBuf> {
+    let candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ];
+    for c in candidates {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let p = dir.join("bash.exe");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Spawn a shell that reads commands from its (piped) stdin. Returns the command
+/// plus whether it is POSIX (bash/sh) — Git Bash is preferred on Windows, else
+/// cmd. The bool drives the completion-marker script syntax in `run`.
+fn interactive_shell() -> (Command, bool) {
+    #[cfg(windows)]
+    {
+        if let Some(bash) = windows_bash() {
+            let mut c = Command::new(bash);
+            c.arg("-s"); // read commands from stdin
+            return (c, true);
+        }
         let mut c = Command::new("cmd");
         c.arg("/Q").arg("/K"); // echo off, stay resident reading stdin
-        c
-    } else {
+        (c, false)
+    }
+    #[cfg(not(windows))]
+    {
         let mut c = Command::new("sh");
         c.arg("-s"); // read commands from stdin
-        c
+        (c, true)
     }
 }
 
@@ -301,6 +341,12 @@ impl SessionManager {
     }
 }
 
+/// Whether a new session's shell is POSIX (bash/sh) rather than cmd — so a caller
+/// (or a test) can pick command syntax to match the runtime shell.
+pub fn shell_is_posix() -> bool {
+    interactive_shell().1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,10 +360,10 @@ mod tests {
     #[tokio::test]
     async fn state_persists_across_commands() {
         let mgr = SessionManager::new(ws());
-        let (set, get) = if cfg!(windows) {
-            ("set DCPVAR=persisted", "echo %DCPVAR%")
-        } else {
+        let (set, get) = if shell_is_posix() {
             ("DCPVAR=persisted", "echo $DCPVAR")
+        } else {
+            ("set DCPVAR=persisted", "echo %DCPVAR%")
         };
         mgr.run("s1", set, 8000).await.unwrap();
         let r = mgr.run("s1", get, 8000).await.unwrap();
@@ -328,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn captures_nonzero_exit_without_killing_session() {
         let mgr = SessionManager::new(ws());
-        let fail = if cfg!(windows) { "cmd /c exit 4" } else { "(exit 4)" };
+        let fail = if shell_is_posix() { "(exit 4)" } else { "cmd /c exit 4" };
         let r = mgr.run("s2", fail, 8000).await.unwrap();
         assert_eq!(r.exit_code, Some(4), "output: {:?}", r.output);
         // Session still alive: a follow-up command runs.
@@ -375,10 +421,10 @@ mod tests {
     #[tokio::test]
     async fn sessions_are_isolated() {
         let mgr = SessionManager::new(ws());
-        let (set_a, set_b, get) = if cfg!(windows) {
-            ("set K=A", "set K=B", "echo %K%")
-        } else {
+        let (set_a, set_b, get) = if shell_is_posix() {
             ("K=A", "K=B", "echo $K")
+        } else {
+            ("set K=A", "set K=B", "echo %K%")
         };
         mgr.run("a", set_a, 8000).await.unwrap();
         mgr.run("b", set_b, 8000).await.unwrap();

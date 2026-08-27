@@ -23,14 +23,50 @@ const MAX_STREAM_BYTES: usize = 60_000;
 /// Run a shell command and return its captured output and exit status.
 pub struct ShellTool;
 
-/// Build the platform shell invocation for one command line. The secret-env
+/// Locate a POSIX shell to prefer on Windows (Git Bash), so the model's
+/// Linux-style command lines (pipes, `;`, `2>/dev/null`, heredocs, inline
+/// `python -c` with newlines) run as written instead of being mangled by cmd.
+#[cfg(windows)]
+fn windows_bash() -> Option<std::path::PathBuf> {
+    let candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ];
+    for c in candidates {
+        let p = std::path::PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let p = dir.join("bash.exe");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Build the platform shell invocation for one command line. Prefers Git Bash on
+/// Windows (the model writes POSIX shell); falls back to cmd. The secret-env
 /// scrub is applied later, in [`run_command`].
 fn shell_command(command: &str) -> Command {
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
+        if let Some(bash) = windows_bash() {
+            let mut c = Command::new(bash);
+            c.arg("-c").arg(command);
+            return c;
+        }
         let mut c = Command::new("cmd");
         c.arg("/C").arg(command);
         c
-    } else {
+    }
+    #[cfg(not(windows))]
+    {
         let mut c = Command::new("sh");
         c.arg("-c").arg(command);
         c
@@ -46,10 +82,10 @@ impl Tool for ShellTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "shell".into(),
-            description: "Run a command through the OS shell (cmd on Windows, sh on Unix) and \
-                return its stdout, stderr, and exit code. Each call runs in a fresh shell — no \
-                state persists between calls; pass `workdir` instead of using cd. Use this to run \
-                any installed tool (nmap, sqlmap, curl, etc.)."
+            description: "Run a command through the OS shell (Git Bash if present on Windows, else \
+                cmd; sh on Unix) and return its stdout, stderr, and exit code. Each call runs in a \
+                fresh shell — no state persists between calls; pass `workdir` instead of using cd. \
+                Use this to run any installed tool (nmap, sqlmap, curl, etc.)."
                 .into(),
             parameters: json!({
                 "type": "object",

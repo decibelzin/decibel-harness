@@ -443,6 +443,10 @@ async fn run_prompt(
     if let Some(ws) = workspace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         config = config.with_cwd(ws);
     }
+    // A real engagement takes many tool steps; the AgentConfig default (16) hits
+    // the cap mid-recon. 40 gives room while still bounding a runaway loop (and
+    // multi-turn memory means the model can be told to continue past it).
+    config.max_steps = 40;
     let mut blocks = vec![ContentBlock::text(prompt)];
     if let Some(img) = image.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         blocks.push(ContentBlock::image(img)); // a data: URL for a vision model

@@ -20,7 +20,7 @@ mod verify;
 
 pub use local::LocalExecutor;
 pub use remote::{RemoteAuth, RemoteExecutor};
-pub use session::{SessionManager, SessionOutput, SessionStatus};
+pub use session::{shell_is_posix, SessionManager, SessionOutput, SessionStatus};
 pub use verify::{validate, PocSpec, Verdict};
 
 use serde::{Deserialize, Serialize};

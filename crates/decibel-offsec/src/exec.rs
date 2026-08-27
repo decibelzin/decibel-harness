@@ -391,10 +391,10 @@ mod tests {
     #[tokio::test]
     async fn bash_session_persists_state_across_tools() {
         let sessions = Arc::new(SessionManager::new("."));
-        let (set, get) = if cfg!(windows) {
-            ("set DBVAR=persisted", "echo %DBVAR%")
-        } else {
+        let (set, get) = if decibel_executor::shell_is_posix() {
             ("DBVAR=persisted", "echo $DBVAR")
+        } else {
+            ("set DBVAR=persisted", "echo %DBVAR%")
         };
         let r1 = run(Arc::new(BashTool::new(sessions.clone())), json!({ "command": set, "session": "t", "timeout_ms": 8000 })).await;
         assert!(!r1.is_error, "bash set failed: {:?}", r1.content);
