@@ -720,6 +720,9 @@ function Composer() {
           <img src={pendingImage()} alt="attachment" />
           <button class="attach-remove" title="Remove image" onClick={() => setPendingImage('')}>✕</button>
         </div>
+        <Show when={!visionOk()}>
+          <div class="attach-warn">⚠ The selected model has no vision — switch to a vision model (e.g. deepseek-v4-flash-vision-exp) to send this image.</div>
+        </Show>
       </Show>
       <textarea
         ref={taEl}
@@ -766,12 +769,7 @@ function Composer() {
         }}
       />
       <div class="composer-bottom">
-        <button
-          class="plus-btn"
-          title={visionOk() ? 'Attach an image' : 'The selected model has no vision — pick a vision model to attach'}
-          disabled={!visionOk()}
-          onClick={() => fileInput?.click()}
-        ><IconAdd /></button>
+        <button class="plus-btn" title="Attach an image (needs a vision model)" onClick={() => fileInput?.click()}><IconAdd /></button>
         <input ref={fileInput} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickFile} />
         <ChipDropdown
           value={access()}
@@ -798,7 +796,7 @@ function Composer() {
         </div>
         <button
           class={`send ${running() ? 'stop' : ''}`}
-          disabled={!running() && (sessionLoading() || (!draft().trim() && !pendingImage()) || !selectedModel())}
+          disabled={!running() && (sessionLoading() || (!draft().trim() && !(pendingImage() && visionOk())) || !selectedModel())}
           onClick={submit}
           title={running() ? 'Stop' : 'Run'}
         >
