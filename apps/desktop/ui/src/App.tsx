@@ -15,6 +15,7 @@ import {
   mode,
   modelPickerOpen,
   openSession,
+  pendingImage,
   refreshSessions,
   removeSession,
   renameSessionTitle,
@@ -22,6 +23,7 @@ import {
   sessions,
   setAccess,
   setMode,
+  setPendingImage,
   setComposerDraft,
   settingsOpen,
   setModelPickerOpen,
@@ -601,7 +603,16 @@ function Composer() {
   const [sel, setSel] = createSignal(0)
   const current = () => modelById(selectedModel())
   let taEl: HTMLTextAreaElement | undefined
+  let fileInput: HTMLInputElement | undefined
   onMount(() => taEl?.focus())
+  const onPickFile = (e: Event & { currentTarget: HTMLInputElement }) => {
+    const file = e.currentTarget.files?.[0]
+    e.currentTarget.value = '' // allow re-picking the same file
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => setPendingImage(String(reader.result))
+    reader.readAsDataURL(file)
+  }
 
   // Slash-command autocomplete: active while typing "/word" (no space yet).
   const slashQuery = (): string | null => {
@@ -671,6 +682,12 @@ function Composer() {
           ]}
         />
       </div>
+      <Show when={pendingImage()}>
+        <div class="attach-preview">
+          <img src={pendingImage()} alt="attachment" />
+          <button class="attach-remove" title="Remove image" onClick={() => setPendingImage('')}>✕</button>
+        </div>
+      </Show>
       <textarea
         ref={taEl}
         rows={1}
@@ -716,7 +733,8 @@ function Composer() {
         }}
       />
       <div class="composer-bottom">
-        <button class="plus-btn" title="Attach"><IconAdd /></button>
+        <button class="plus-btn" title="Attach an image (for vision models)" onClick={() => fileInput?.click()}><IconAdd /></button>
+        <input ref={fileInput} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickFile} />
         <ChipDropdown
           value={access()}
           onSelect={(v) => setAccess(v as 'full' | 'readonly')}
@@ -742,7 +760,7 @@ function Composer() {
         </div>
         <button
           class={`send ${running() ? 'stop' : ''}`}
-          disabled={!running() && (!draft().trim() || !selectedModel())}
+          disabled={!running() && ((!draft().trim() && !pendingImage()) || !selectedModel())}
           onClick={submit}
           title={running() ? 'Stop' : 'Run'}
         >

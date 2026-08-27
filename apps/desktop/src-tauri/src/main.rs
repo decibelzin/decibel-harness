@@ -225,6 +225,7 @@ async fn run_prompt(
     workspace: Option<String>,
     mode: String,
     access: String,
+    image: Option<String>,
     session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
@@ -270,7 +271,11 @@ async fn run_prompt(
     if let Some(ws) = workspace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         config = config.with_cwd(ws);
     }
-    let message = Message::human(next_msg_id("u"), vec![ContentBlock::text(prompt)]);
+    let mut blocks = vec![ContentBlock::text(prompt)];
+    if let Some(img) = image.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        blocks.push(ContentBlock::image(img)); // a data: URL for a vision model
+    }
+    let message = Message::human(next_msg_id("u"), blocks);
 
     let sink = on_event.clone();
     let outcome = run_turn_observed(
@@ -389,6 +394,8 @@ fn session_context(session_id: String, sessions: State<'_, Sessions>) -> Context
             ContentBlock::ToolResult { content, .. } => {
                 content.iter().filter_map(ContentBlock::as_text).map(str::len).sum()
             }
+            // Images are tokenized by the vision model, not by char count.
+            ContentBlock::Image { .. } => 0,
         })
         .sum();
 

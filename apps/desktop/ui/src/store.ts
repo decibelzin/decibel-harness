@@ -156,6 +156,9 @@ export const [workspacePanelOpen, setWorkspacePanelOpen] = createSignal(false)
 // The composer draft lives in the store so it survives the hero↔docked Composer
 // remount at the empty/non-empty boundary (otherwise a typed draft is lost).
 export const [composerDraft, setComposerDraft] = createSignal('')
+// A pending image attachment (a base64 data: URL) sent with the next prompt to a
+// vision model; cleared once the run starts.
+export const [pendingImage, setPendingImage] = createSignal<string>('')
 let controller: AbortController | undefined
 // Each run gets a monotonic id; only the active run's events are applied, so a
 // cancelled or superseded run can never write into the transcript or clobber
@@ -237,13 +240,18 @@ export function newSession(): void {
 
 export async function send(text: string): Promise<void> {
   const prompt = text.trim()
-  if (!prompt || running()) return
+  if (running()) return
   const model = selectedModel()
   if (!model) return
+  // Capture + clear any attached image (sent once, with this prompt).
+  const image = pendingImage()
+  if (!prompt && !image) return // nothing to send
+  setPendingImage('')
   // Route to the model's provider (DeepSeek API vs the free OpenRouter models).
   const provider = modelById(model)?.provider ?? 'deepseek'
 
-  setConversation('list', (l) => [...l, { role: 'user', blocks: [{ kind: 'text', text: prompt }] }])
+  const userBlocks: Block[] = [{ kind: 'text', text: prompt || '(image)' }]
+  setConversation('list', (l) => [...l, { role: 'user', blocks: userBlocks }])
   setConversation('list', (l) => [...l, { role: 'assistant', blocks: [] }])
   const idx = conversation.list.length - 1
 
@@ -252,7 +260,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, workspace(), mode(), access(), sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, workspace(), mode(), access(), image, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch

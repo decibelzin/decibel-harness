@@ -25,6 +25,12 @@ pub enum ContentBlock {
         /// The reasoning text.
         text: String,
     },
+    /// An input image for a vision model (a `data:` URL or an `https` URL).
+    /// Input-only: the model never produces one on its stream.
+    Image {
+        /// The image URL — a base64 `data:` URL or an `https` URL.
+        url: String,
+    },
     /// A tool invocation requested by the model.
     ToolCall {
         /// Provider-issued call id; correlates with the matching result.
@@ -55,6 +61,11 @@ impl ContentBlock {
     /// Construct a reasoning block.
     pub fn reasoning(text: impl Into<String>) -> Self {
         ContentBlock::Reasoning { text: text.into() }
+    }
+
+    /// Construct an input image block from a URL.
+    pub fn image(url: impl Into<String>) -> Self {
+        ContentBlock::Image { url: url.into() }
     }
 
     /// The visible text of a `Text` block, or `None` for any other block.

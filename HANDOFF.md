@@ -244,7 +244,12 @@ sidebar icons) built in phases:
   (persisted). `run_prompt(mode, access)`: **plan** → no tools + a plan-only system
   prompt (propose, don't execute); **read-only** → the non-destructive tool subset
   (nmap/http/read/glob/grep/add_finding — no shell/write/edit); else the full toolkit.
-- [ ] Phase 4 — image attachments (the `+` button; for the vision models).
+- [x] **Phase 4 — image attachments (DONE):** the `+` button attaches an image
+  (file → base64 data URL → preview with a remove button; send enabled with an
+  image alone). New `ContentBlock::Image { url }` in the LLM vocabulary; the adapter
+  emits the OpenAI vision content array (`{type:image_url,image_url:{url}}`) for a
+  user message with images (unit-tested); `run_prompt(image)` adds it to the prompt.
+  Use a vision model (`deepseek-v4-flash-vision-exp`, or an OpenRouter vision model).
 
 **Minor known limitations**
 - Markdown links open via `window.open(..., 'noopener,noreferrer')`; in a Tauri

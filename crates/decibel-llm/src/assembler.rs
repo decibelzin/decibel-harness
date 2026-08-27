@@ -182,9 +182,9 @@ fn finalized_to_pending(block: ContentBlock) -> Pending {
             name: Some(name),
             arguments,
         },
-        // A tool-result never arrives on the assistant stream; keep it as text
-        // so nothing is silently lost.
-        ContentBlock::ToolResult { .. } => Pending::Text(String::new()),
+        // A tool-result or image never arrives on the assistant stream; keep an
+        // empty text so nothing is silently lost.
+        ContentBlock::ToolResult { .. } | ContentBlock::Image { .. } => Pending::Text(String::new()),
     }
 }
 

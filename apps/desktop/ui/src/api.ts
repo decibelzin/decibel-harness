@@ -74,6 +74,7 @@ export async function runPrompt(
   workspace: string,
   mode: string,
   access: string,
+  image: string,
   sessionId: string,
   runId: number,
   onEvent: (e: RunEvent) => void,
@@ -87,7 +88,7 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    // `workspace` = tools' working directory; `mode` = act|plan; `access` = full|readonly.
+    // `image` = a data: URL for a vision model ('' = none).
     await invoke('run_prompt', {
       prompt,
       model,
@@ -95,6 +96,7 @@ export async function runPrompt(
       workspace: workspace || null,
       mode,
       access,
+      image: image || null,
       sessionId,
       runId,
       onEvent: channel,

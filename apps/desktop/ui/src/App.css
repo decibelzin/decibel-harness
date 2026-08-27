@@ -468,6 +468,39 @@
   background: var(--surface-3);
   color: var(--text);
 }
+
+/* image attachment preview */
+.attach-preview {
+  position: relative;
+  display: inline-block;
+  margin: 4px 2px 8px;
+}
+.attach-preview img {
+  max-height: 84px;
+  max-width: 180px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  display: block;
+}
+.attach-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.attach-remove:hover {
+  background: var(--danger);
+  color: white;
+}
 .model-chip {
   display: inline-flex;
   align-items: center;

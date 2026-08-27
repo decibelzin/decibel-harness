@@ -143,6 +143,7 @@ fn summarize(msg: &Message) -> String {
         .map(|block| match block {
             ContentBlock::Text { text } => text.replace('\n', " / "),
             ContentBlock::Reasoning { .. } => "<reasoning>".into(),
+            ContentBlock::Image { .. } => "<image>".into(),
             ContentBlock::ToolCall { name, arguments, .. } => format!("call {name}({arguments})"),
             ContentBlock::ToolResult { .. } => "<tool-result>".into(),
         })

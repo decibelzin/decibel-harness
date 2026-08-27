@@ -251,10 +251,12 @@ fn convert_message(message: &Message) -> Value {
     };
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut images: Vec<String> = Vec::new();
     for block in &message.content {
         match block {
             ContentBlock::Text { text: t } => text.push_str(t),
             ContentBlock::Reasoning { .. } => {}
+            ContentBlock::Image { url } => images.push(url.clone()),
             ContentBlock::ToolCall { id, name, arguments } => {
                 tool_calls.push(json!({
                     "id": id.as_str(),
@@ -268,7 +270,17 @@ fn convert_message(message: &Message) -> Value {
 
     let mut out = json!({ "role": role });
     let map = out.as_object_mut().expect("object literal");
-    if tool_calls.is_empty() {
+    if !images.is_empty() {
+        // OpenAI vision shape: content is an array of text + image_url parts.
+        let mut parts = Vec::new();
+        if !text.is_empty() {
+            parts.push(json!({ "type": "text", "text": text }));
+        }
+        for url in &images {
+            parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+        }
+        map.insert("content".into(), Value::Array(parts));
+    } else if tool_calls.is_empty() {
         map.insert("content".into(), json!(text));
     } else {
         // An assistant tool-call message may carry no visible content.
@@ -502,6 +514,21 @@ mod tests {
         assert_eq!(wire["role"], "tool");
         assert_eq!(wire["tool_call_id"], "c1");
         assert_eq!(wire["content"], "out");
+    }
+
+    #[test]
+    fn user_message_with_image_uses_vision_content() {
+        let msg = Message::human(
+            "u1",
+            vec![ContentBlock::text("what is this?"), ContentBlock::image("data:image/png;base64,AAAA")],
+        );
+        let wire = convert_message(&msg);
+        assert_eq!(wire["role"], "user");
+        let content = wire["content"].as_array().expect("content is an array for vision");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "what is this?");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,AAAA");
     }
 
     #[test]
