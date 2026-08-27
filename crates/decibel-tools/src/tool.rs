@@ -74,7 +74,11 @@ impl ExecCtx {
             return p.to_path_buf();
         }
         match &self.cwd {
-            Some(cwd) => cwd.join(p),
+            // A rooted-but-driveless path ("/foo", "\foo") is NOT is_absolute() on
+            // Windows, and `Path::join` with it would DISCARD the cwd and jump to
+            // the drive root — escaping the workspace. Strip leading separators so
+            // such a path stays inside the workspace like any other relative path.
+            Some(cwd) => cwd.join(path.trim_start_matches(|c| c == '/' || c == '\\')),
             None => p.to_path_buf(),
         }
     }

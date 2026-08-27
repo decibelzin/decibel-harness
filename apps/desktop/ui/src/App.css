@@ -183,15 +183,22 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sess-del {
+.sess-del,
+.sess-act {
   opacity: 0;
   color: var(--text-faint);
-  padding: 4px 8px;
+  padding: 4px 7px;
   font-size: 12px;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
 }
-.sess-item:hover .sess-del {
+.sess-item:hover .sess-del,
+.sess-item:hover .sess-act {
   opacity: 1;
+}
+.sess-act:hover {
+  color: var(--text);
 }
 .sess-del:hover {
   color: var(--danger);
@@ -467,6 +474,14 @@
 .plus-btn:hover {
   background: var(--surface-3);
   color: var(--text);
+}
+.plus-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.plus-btn:disabled:hover {
+  background: none;
+  color: var(--text-muted);
 }
 
 /* image attachment preview */

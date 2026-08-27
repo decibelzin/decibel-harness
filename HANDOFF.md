@@ -251,6 +251,22 @@ sidebar icons) built in phases:
   user message with images (unit-tested); `run_prompt(image)` adds it to the prompt.
   Use a vision model (`deepseek-v4-flash-vision-exp`, or an OpenRouter vision model).
 
+**Adversarial review (5th, of the 4 phases) — 16 findings confirmed, 13 fixed:**
+persist_session now fences on session Arc identity (`is_current_session`) so a
+delete/reopen mid-run can't resurrect or clobber a session (was high); atomic
+temp-file+rename writes; `ExecCtx::resolve` strips leading separators so a `/x`
+path can't escape the workspace to the drive root on Windows (was high, unit
+tested); the shell tool's relative `workdir` now resolves against the workspace;
+`openSession` has a generation guard + a `sessionLoading` gate (blocks sends
+during a load); the composer draft is cleared only when a send commits (Enter with
+no model no longer eats the text); Enter on an ambiguous slash prefix (`/c`)
+COMPLETES to `/clear` instead of executing it; the `+` attach button is gated on
+the model's vision modality; draft/image are cleared on session switch; rename is
+its own button (no more double-click firing openSession); the textarea regrows its
+height on remount. **Deferred (all low):** #3 rename-vs-persist meta race, #4
+blocking fs IO on the async worker (files are tiny), #12 reopened tool cards lose
+their structured `value` (show rendered text only).
+
 **Minor known limitations**
 - Markdown links open via `window.open(..., 'noopener,noreferrer')`; in a Tauri
   webview without the opener plugin this may no-op (safe — never navigates away).

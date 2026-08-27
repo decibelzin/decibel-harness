@@ -20,6 +20,7 @@ import {
   removeSession,
   renameSessionTitle,
   runSlashCommand,
+  sessionLoading,
   sessions,
   setAccess,
   setMode,
@@ -170,9 +171,13 @@ function Sidebar() {
               <Show
                 when={editing() === s.id}
                 fallback={
-                  <button class="sess-open" onDblClick={() => startRename(s)} onClick={() => openSession(s.id)} title={s.title}>
-                    {s.title}
-                  </button>
+                  <>
+                    <button class="sess-open" onClick={() => openSession(s.id)} title={s.title}>
+                      {s.title}
+                    </button>
+                    <button class="sess-act" title="Rename" onClick={() => startRename(s)}><IconEdit /></button>
+                    <button class="sess-del" title="Delete session" onClick={() => removeSession(s.id)}>✕</button>
+                  </>
                 }
               >
                 <input
@@ -187,7 +192,6 @@ function Sidebar() {
                   onBlur={() => setEditing(null)}
                 />
               </Show>
-              <button class="sess-del" title="Delete session" onClick={() => removeSession(s.id)}>✕</button>
             </div>
           )}
         </For>
@@ -604,7 +608,16 @@ function Composer() {
   const current = () => modelById(selectedModel())
   let taEl: HTMLTextAreaElement | undefined
   let fileInput: HTMLInputElement | undefined
-  onMount(() => taEl?.focus())
+  const visionOk = () => modelById(selectedModel())?.input_modalities?.includes('image') ?? false
+  onMount(() => {
+    taEl?.focus()
+    // Restore the auto-grow height for a multi-line draft preserved across the
+    // hero↔docked remount (otherwise it collapses into a one-row box).
+    if (taEl && draft()) {
+      taEl.style.height = 'auto'
+      taEl.style.height = `${Math.min(taEl.scrollHeight, 220)}px`
+    }
+  })
   const onPickFile = (e: Event & { currentTarget: HTMLInputElement }) => {
     const file = e.currentTarget.files?.[0]
     e.currentTarget.value = '' // allow re-picking the same file
@@ -640,11 +653,18 @@ function Composer() {
     const t = draft().trim()
     if (t === '/') return // bare slash: keep the menu open, don't act
     if (isCommand(t)) return exec(t.slice(1)) // exact "/name" only
-    // A typed prefix with the menu open runs the highlighted match (autocomplete).
-    if (slashQuery() && slashMatches().length) {
-      return exec(slashMatches()[Math.min(sel(), slashMatches().length - 1)].name)
+    if (t.startsWith('/') && slashQuery()) {
+      const m = slashMatches()
+      // A single unambiguous match runs; a longer prefix COMPLETES (so Enter on
+      // "/c" fills "/clear" for review instead of auto-wiping the conversation).
+      if (m.length === 1) return exec(m[0].name)
+      if (m.length > 1) {
+        setDraft(`/${m[Math.min(sel(), m.length - 1)].name}`)
+        return
+      }
     }
-    setDraft('')
+    // Normal prompt: send() clears the draft only once it actually commits, so a
+    // missing model or an in-flight session load never destroys the typed text.
     void send(t)
   }
   return (
@@ -733,7 +753,12 @@ function Composer() {
         }}
       />
       <div class="composer-bottom">
-        <button class="plus-btn" title="Attach an image (for vision models)" onClick={() => fileInput?.click()}><IconAdd /></button>
+        <button
+          class="plus-btn"
+          title={visionOk() ? 'Attach an image' : 'The selected model has no vision — pick a vision model to attach'}
+          disabled={!visionOk()}
+          onClick={() => fileInput?.click()}
+        ><IconAdd /></button>
         <input ref={fileInput} type="file" accept="image/*" style={{ display: 'none' }} onChange={onPickFile} />
         <ChipDropdown
           value={access()}
@@ -760,7 +785,7 @@ function Composer() {
         </div>
         <button
           class={`send ${running() ? 'stop' : ''}`}
-          disabled={!running() && ((!draft().trim() && !pendingImage()) || !selectedModel())}
+          disabled={!running() && (sessionLoading() || (!draft().trim() && !pendingImage()) || !selectedModel())}
           onClick={submit}
           title={running() ? 'Stop' : 'Run'}
         >

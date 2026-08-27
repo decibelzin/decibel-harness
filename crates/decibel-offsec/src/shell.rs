@@ -69,9 +69,10 @@ impl Tool for ShellTool {
         let timeout = Duration::from_millis(arg_u64_opt(&arguments, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS));
 
         let mut cmd = shell_command(&command);
-        // An explicit workdir wins; otherwise fall back to the session workspace.
+        // An explicit workdir wins (resolved against the workspace like every other
+        // tool path); otherwise fall back to the session workspace itself.
         if let Some(dir) = &workdir {
-            cmd.current_dir(dir);
+            cmd.current_dir(ctx.resolve(dir));
         } else if let Some(cwd) = ctx.cwd() {
             cmd.current_dir(cwd);
         }

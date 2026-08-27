@@ -6,7 +6,7 @@
 //! a streaming agent run driven by the offensive toolkit.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -103,6 +103,22 @@ fn session_handle(sessions: &Sessions, session_id: &str) -> Arc<tokio::sync::Mut
     map.entry(session_id.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(Session::new(session_id.to_string()))))
         .clone()
+}
+
+/// Whether `handle` is STILL the current session Arc for `id`. A delete_session
+/// or load_session during an in-flight run removes/replaces the map entry; a
+/// stale run must then NOT persist (it would resurrect a deleted session or
+/// clobber a reloaded one back to its pre-turn state).
+fn is_current_session(
+    sessions: &Sessions,
+    id: &str,
+    handle: &Arc<tokio::sync::Mutex<Session>>,
+) -> bool {
+    sessions
+        .0
+        .lock()
+        .map(|map| map.get(id).is_some_and(|cur| Arc::ptr_eq(cur, handle)))
+        .unwrap_or(false)
 }
 
 /// One model as the picker needs it (matches the frontend `ModelInfo`).
@@ -305,8 +321,11 @@ async fn run_prompt(
     )
     .await;
 
-    // Save the conversation (including this turn) to disk, then release the lock.
-    persist_session(&app, &session_id, &session);
+    // Save the conversation (including this turn) to disk — but only if this run's
+    // session is still the current one (a delete/load mid-run must not be undone).
+    if is_current_session(&sessions, &session_id, &handle) {
+        persist_session(&app, &session_id, &session);
+    }
     drop(session);
     if let Ok(mut map) = runs.0.lock() {
         map.remove(&run_id);
@@ -471,7 +490,9 @@ async fn compact_session(
         SurfaceIntent::append_bare(),
     );
     *guard = fresh;
-    persist_session(&app, &session_id, &guard);
+    if is_current_session(&sessions, &session_id, &handle) {
+        persist_session(&app, &session_id, &guard);
+    }
     Ok(summary)
 }
 
@@ -491,6 +512,16 @@ fn sessions_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Write atomically: a sibling temp file + rename over the target, so a crash
+/// mid-write cannot leave a truncated/partial file that later fails to parse.
+fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
 }
 
 /// Metadata sidecar for a saved session (what the sidebar lists).
@@ -523,7 +554,7 @@ fn persist_session(app: &AppHandle, id: &str, session: &Session) {
     }
     let Ok(dir) = sessions_dir(app) else { return };
     if let Ok(jsonl) = persist::to_jsonl(session) {
-        let _ = std::fs::write(dir.join(format!("{id}.jsonl")), jsonl);
+        let _ = atomic_write(&dir.join(format!("{id}.jsonl")), &jsonl);
     }
     let meta_path = dir.join(format!("{id}.meta.json"));
     let kept_title = std::fs::read_to_string(&meta_path)
@@ -537,7 +568,7 @@ fn persist_session(app: &AppHandle, id: &str, session: &Session) {
         updated_ms: now_ms(),
     };
     if let Ok(js) = serde_json::to_string(&meta) {
-        let _ = std::fs::write(meta_path, js);
+        let _ = atomic_write(&meta_path, &js);
     }
 }
 

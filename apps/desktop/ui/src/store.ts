@@ -175,6 +175,12 @@ let sessionId = `sess-${Date.now()}-${++sessionCounter}`
 export const [activeSessionId, setActiveSessionId] = createSignal(sessionId)
 // Saved sessions listed in the sidebar (disk-backed in the desktop app).
 export const [sessions, setSessions] = createSignal<SessionMeta[]>([])
+// True while a session is being loaded — blocks sends so a run can't start
+// against the old session and stream into the freshly-loaded one.
+export const [sessionLoading, setSessionLoading] = createSignal(false)
+// Monotonic counter so a slow openSession that resolves after a newer open/new
+// bails instead of clobbering the newer state.
+let openGen = 0
 
 /** Reload the saved-session list (sidebar). */
 export async function refreshSessions(): Promise<void> {
@@ -200,13 +206,20 @@ function mapDisplayMsg(d: DisplayMsg): Msg {
 /** Open a saved session: reload its transcript and continue its backend memory. */
 export async function openSession(id: string): Promise<void> {
   if (running()) cancel()
+  const gen = ++openGen
+  setSessionLoading(true)
   try {
     const display = await loadSession(id)
+    if (gen !== openGen) return // superseded by a newer open / New Session
     sessionId = id
     setActiveSessionId(id)
     setConversation('list', display.map(mapDisplayMsg))
+    setComposerDraft('') // a draft/image prepared for the old conversation shouldn't leak
+    setPendingImage('')
   } catch {
     /* ignore a missing/corrupt session */
+  } finally {
+    if (gen === openGen) setSessionLoading(false)
   }
 }
 
@@ -230,25 +243,32 @@ function pushSystem(blocks: Block[]): void {
 }
 
 export function newSession(): void {
+  openGen++ // supersede any in-flight session load
   cancel()
   void clearSession(sessionId).catch(() => {})
   sessionId = `sess-${Date.now()}-${++sessionCounter}`
   setActiveSessionId(sessionId)
   setConversation('list', [])
+  setComposerDraft('')
+  setPendingImage('')
+  setSessionLoading(false)
   void refreshSessions()
 }
 
 export async function send(text: string): Promise<void> {
   const prompt = text.trim()
-  if (running()) return
+  if (running() || sessionLoading()) return
   const model = selectedModel()
   if (!model) return
-  // Capture + clear any attached image (sent once, with this prompt).
-  const image = pendingImage()
+  const info = modelById(model)
+  // Only attach the image to a vision model; otherwise keep it (a text-only model
+  // would silently drop it) so the user can switch models and still send it.
+  const supportsVision = info?.input_modalities?.includes('image') ?? false
+  const image = supportsVision ? pendingImage() : ''
   if (!prompt && !image) return // nothing to send
-  setPendingImage('')
-  // Route to the model's provider (DeepSeek API vs the free OpenRouter models).
-  const provider = modelById(model)?.provider ?? 'deepseek'
+  if (image) setPendingImage('')
+  setComposerDraft('') // committed — clear the draft now (not before the guards)
+  const provider = info?.provider ?? 'deepseek'
 
   const userBlocks: Block[] = [{ kind: 'text', text: prompt || '(image)' }]
   setConversation('list', (l) => [...l, { role: 'user', blocks: userBlocks }])

@@ -279,6 +279,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rooted_paths_stay_inside_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ExecCtx::new().with_cwd(dir.path());
+        // A leading-separator path ("/x", "\x") is not is_absolute() on Windows and
+        // must resolve INSIDE the workspace, not escape to the drive root.
+        WriteFileTool.execute(json!({ "path": "/rooted.txt", "content": "x" }), &ctx).await.unwrap();
+        assert!(dir.path().join("rooted.txt").exists());
+        WriteFileTool.execute(json!({ "path": "\\back.txt", "content": "x" }), &ctx).await.unwrap();
+        assert!(dir.path().join("back.txt").exists());
+    }
+
+    #[tokio::test]
     async fn cancelled_write_does_not_touch_disk() {
         use tokio_util::sync::CancellationToken;
         let dir = tempfile::tempdir().unwrap();
