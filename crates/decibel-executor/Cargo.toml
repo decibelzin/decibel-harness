@@ -1,0 +1,21 @@
+[package]
+name = "decibel-executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# The execution plane, ported from Decepticon (Apache-2.0): runs commands via a
+# pluggable Executor backend (Local now, Remote-SSH via russh) confined to the
+# engagement workspace, plus persistent named shell sessions (the portable tmux
+# equivalent for interactive/long-running tools) and differential PoC validation.
+
+[lib]
+name = "decibel_executor"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "time", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Pure-Rust SSH for the Remote-SSH backend. `ring` crypto backend (pregenerated
+# asm, no cmake/nasm) instead of the default aws-lc-rs.
+russh = { version = "0.63.0", default-features = false, features = ["ring", "flate2", "rsa"] }

@@ -8,6 +8,8 @@ members = [
     "crates/decibel-agent",
     "crates/decibel-offsec",
     "crates/decibel-orchestrator",
+    "crates/decibel-store",
+    "crates/decibel-executor",
 ]
 
 [workspace.package]

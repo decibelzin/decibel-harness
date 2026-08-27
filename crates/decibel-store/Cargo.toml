@@ -1,0 +1,20 @@
+[package]
+name = "decibel-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Local SQLite state store, ported from Decepticon (Apache-2.0): the engagement
+# knowledge graph (typed nodes/edges + vocab), OPPLAN objective tree, weighted
+# attack-chain planner, named analyses, and report/SARIF rendering. Docker-free;
+# "the one store you must not lose" — decibel's shared cross-agent working memory.
+
+[lib]
+name = "decibel_store"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1_smol = "1"
+quick-xml = "0.36"
