@@ -14,15 +14,24 @@ license.workspace = true
 [dependencies]
 decibel-tools = { path = "../decibel-tools" }
 decibel-llm = { path = "../decibel-llm" }
+decibel-executor = { path = "../decibel-executor" }
+decibel-store = { path = "../decibel-store" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = "0.1"
-tokio = { version = "1", features = ["process", "fs", "io-util", "time", "rt", "macros", "sync"] }
+tokio = { version = "1", features = ["process", "fs", "io-util", "time", "rt", "macros", "sync", "net"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 walkdir = "2"
 globset = "0.4"
 regex = "1"
 roxmltree = "0.20"
+# Pure web/auth analyzers ported from Decepticon's tools/web (jwt/oauth/cookie/graphql).
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+# Native recon (arsenal): TLS inspection via rustls (ring backend — no OpenSSL) + cert parsing.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+x509-parser = "0.16"
 
 [target.'cfg(unix)'.dependencies]
 # Kill the whole process group on timeout/cancel so a launched tool (nmap, etc.)
@@ -33,6 +42,8 @@ libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tokio-util = "0.7"
 tempfile = "3"
+# Loads the self-signed cert/key in arsenal/tls.rs tests.
+rustls-pemfile = "2"
 # The live red-team demo wires the toolkit into the agent loop and OpenRouter.
 decibel-agent = { path = "../decibel-agent" }
 decibel-openrouter = { path = "../decibel-openrouter" }
