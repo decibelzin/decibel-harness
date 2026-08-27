@@ -1,5 +1,7 @@
 //! The `Tool` trait and the values that flow through one execution.
 
+use std::path::{Path, PathBuf};
+
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -19,24 +21,33 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
-/// Per-execution context handed to a tool body: cooperative cancellation now,
-/// and (later) the calling agent, session cwd, and deferred-context sink.
+/// Per-execution context handed to a tool body: cooperative cancellation and the
+/// session's working directory (which the filesystem/shell tools default to).
 #[derive(Clone, Debug)]
 pub struct ExecCtx {
     cancel: CancellationToken,
+    cwd: Option<PathBuf>,
 }
 
 impl ExecCtx {
-    /// A context with a fresh, never-cancelled token.
+    /// A context with a fresh, never-cancelled token and no working directory.
     pub fn new() -> Self {
         ExecCtx {
             cancel: CancellationToken::new(),
+            cwd: None,
         }
     }
 
     /// A context wired to an existing cancellation token (the turn's signal).
     pub fn with_token(cancel: CancellationToken) -> Self {
-        ExecCtx { cancel }
+        ExecCtx { cancel, cwd: None }
+    }
+
+    /// Set the session working directory the shell/filesystem/search tools use as
+    /// their default. Relative paths a tool receives are resolved against it.
+    pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
     }
 
     /// Whether the caller has requested cancellation.
@@ -47,6 +58,25 @@ impl ExecCtx {
     /// The underlying token, for `tokio::select!` in async tool bodies.
     pub fn token(&self) -> &CancellationToken {
         &self.cancel
+    }
+
+    /// The session working directory, if one was set.
+    pub fn cwd(&self) -> Option<&Path> {
+        self.cwd.as_deref()
+    }
+
+    /// Resolve a tool-supplied path: an absolute path is used as-is; a relative
+    /// path joins the session cwd (or is returned unchanged when no cwd is set,
+    /// preserving the process-cwd behavior for callers that never set one).
+    pub fn resolve(&self, path: &str) -> PathBuf {
+        let p = Path::new(path);
+        if p.is_absolute() {
+            return p.to_path_buf();
+        }
+        match &self.cwd {
+            Some(cwd) => cwd.join(p),
+            None => p.to_path_buf(),
+        }
     }
 }
 

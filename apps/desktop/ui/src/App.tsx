@@ -1,7 +1,7 @@
 import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
-import { deleteApiKey, hasApiKey, isTauri, saveApiKey, type ModelInfo } from './api'
+import { deleteApiKey, hasApiKey, isTauri, pathIsDir, saveApiKey, type ModelInfo } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
 import {
   applyTheme,
@@ -28,8 +28,13 @@ import {
   send,
   setSearch,
   setSelectedModel,
+  setWorkspace,
+  setWorkspacePanelOpen,
   theme,
   visibleModels,
+  workspace,
+  workspaceName,
+  workspacePanelOpen,
   type Block,
   type SlashCommand,
   type ToolBlock,
@@ -86,7 +91,6 @@ function Logo(p: { size?: number }): JSX.Element {
 const IconFolder = () => svg(<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />, 16)
 const IconPlusCircle = () => svg(<><circle cx="12" cy="12" r="9" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" /></>, 16)
 const IconSearch = () => svg(<><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.5" y2="16.5" /></>, 16)
-const IconSliders = () => svg(<><line x1="4" y1="8" x2="20" y2="8" /><line x1="4" y1="16" x2="20" y2="16" /><circle cx="9" cy="8" r="2" /><circle cx="15" cy="16" r="2" /></>, 16)
 const IconAdd = () => svg(<><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>, 16)
 const IconGear = () => svg(<><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.4-2.3 1a7 7 0 0 0-1.7-1l-.4-2.6H9.5l-.4 2.6a7 7 0 0 0-1.7 1l-2.3-1-2 3.4L5 11a7 7 0 0 0 0 2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 1.7 1l.4 2.6h4.9l.4-2.6a7 7 0 0 0 1.7-1l2.3 1 2-3.4-2-1.5c.1-.3.1-.7.1-1z" /></>, 16)
 const IconCollapse = () => svg(<><rect x="3" y="4" width="18" height="16" rx="2" /><line x1="9" y1="4" x2="9" y2="20" /></>, 17)
@@ -116,19 +120,22 @@ function Sidebar() {
         <IconPlusCircle /> New Session
       </button>
       <div class="ws-header">
-        <span class="label">Workspaces</span>
+        <span class="label">Workspace</span>
         <span class="actions">
-          <button title="Search"><IconSearch /></button>
-          <button title="Filter"><IconSliders /></button>
-          <button title="Add workspace"><IconAdd /></button>
+          <button title="Set workspace" onClick={() => setWorkspacePanelOpen(true)}><IconAdd /></button>
         </span>
       </div>
       <div class="ws-list">
-        <div class="ws-item">
-          <span class="fico"><IconFolder /></span>
-          fullbreachtoolkit
-        </div>
-        <div class="ws-session active">New Session</div>
+        <Show
+          when={workspaceName()}
+          fallback={<button class="ws-empty" onClick={() => setWorkspacePanelOpen(true)}>Set a workspace…</button>}
+        >
+          <button class="ws-item" onClick={() => setWorkspacePanelOpen(true)} title={workspace()}>
+            <span class="fico"><IconFolder /></span>
+            {workspaceName()}
+          </button>
+        </Show>
+        <div class="ws-session active">Current session</div>
       </div>
       <button class="settings" onClick={() => setSettingsOpen(true)}><IconGear /> Settings</button>
     </aside>
@@ -430,6 +437,73 @@ function ModelPanel(props: { onClose: () => void }) {
   )
 }
 
+// ── workspace picker ──────────────────────────────────────────────────────────
+function WorkspacePanel() {
+  const [path, setPath] = createSignal(workspace())
+  const [err, setErr] = createSignal<string | undefined>()
+  const [busy, setBusy] = createSignal(false)
+  const close = () => setWorkspacePanelOpen(false)
+  const apply = async () => {
+    const p = path().trim()
+    if (!p) {
+      setWorkspace('')
+      close()
+      return
+    }
+    setBusy(true)
+    setErr(undefined)
+    const ok = await pathIsDir(p)
+    setBusy(false)
+    if (!ok) {
+      setErr('Not a directory on this machine.')
+      return
+    }
+    setWorkspace(p)
+    close()
+  }
+  return (
+    <div class="modal-backdrop" onClick={close}>
+      <div class="modal" onClick={(e) => e.stopPropagation()}>
+        <div class="m-head">Workspace<button class="x" onClick={close}>✕</button></div>
+        <div class="m-body">
+          <div class="field-help">
+            The folder the agent's shell / read / write / edit / glob / grep tools operate in — relative
+            paths it uses resolve here. Leave empty to use the app's own directory.
+          </div>
+          <div class="field-row">
+            <input
+              class="ws-input"
+              placeholder="C:\path\to\target"
+              value={path()}
+              onInput={(e) => setPath(e.currentTarget.value)}
+              onKeyDown={(e) => e.key === 'Enter' && apply()}
+            />
+            <button class="btn primary" disabled={busy()} onClick={apply}>{busy() ? '…' : 'Set'}</button>
+            <Show when={workspace()}>
+              <button class="btn" onClick={() => { setWorkspace(''); close() }}>Clear</button>
+            </Show>
+          </div>
+          <Show when={err()}>
+            <div class="key-status" style={{ color: 'var(--danger)' }}>
+              <span class="kd" style={{ background: 'var(--danger)' }} />{err()}
+            </div>
+          </Show>
+          <div class={`key-status ${workspace() ? 'set' : ''}`}>
+            <span class="kd" />
+            {workspace() ? `Working in: ${workspace()}` : 'No workspace set — using the app directory.'}
+          </div>
+          <Show when={!isTauri()}>
+            <div class="key-status" style={{ color: 'var(--warning)' }}>
+              <span class="kd" style={{ background: 'var(--warning)' }} />
+              Browser preview — the path isn't validated and tools don't run; only the desktop app executes.
+            </div>
+          </Show>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── composer (used centered in the hero and docked in a chat) ─────────────────
 function Composer() {
   // Draft lives in the store so it survives the hero↔docked remount.
@@ -495,7 +569,9 @@ function Composer() {
         </div>
       </Show>
       <div class="chips-top">
-        <button class="chip"><span class="ico"><IconFolder /></span>workspace<span class="caret">▾</span></button>
+        <button class="chip" onClick={() => setWorkspacePanelOpen(true)} title={workspace() || 'Set the working directory'}>
+          <span class="ico"><IconFolder /></span>{workspaceName() || 'workspace'}<span class="caret">▾</span>
+        </button>
         <button class="chip"><span class="ico"><IconMode /></span>Standard mode<span class="caret">▾</span></button>
       </div>
       <textarea
@@ -928,6 +1004,7 @@ export default function App() {
         </Show>
       </div>
       <Show when={settingsOpen()}><Settings /></Show>
+      <Show when={workspacePanelOpen()}><WorkspacePanel /></Show>
     </div>
   )
 }

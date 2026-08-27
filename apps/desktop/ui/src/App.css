@@ -104,10 +104,47 @@
   padding: 7px 8px;
   color: var(--text);
   font-size: 13px;
+  width: 100%;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-item:hover {
+  background: var(--surface-2);
 }
 .ws-item .fico {
   color: var(--accent);
   display: flex;
+  flex-shrink: 0;
+}
+.ws-empty {
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+.ws-empty:hover {
+  color: var(--text-muted);
+  border-color: var(--text-faint);
+}
+.ws-input {
+  flex: 1;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 9px 11px;
+  font-size: 13px;
+  outline: none;
+  font-family: var(--mono);
+}
+.ws-input:focus {
+  border-color: var(--accent);
 }
 .ws-session {
   margin: 2px 0 2px 14px;

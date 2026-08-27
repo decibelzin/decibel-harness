@@ -71,6 +71,7 @@ export async function runPrompt(
   prompt: string,
   model: string,
   provider: string,
+  workspace: string,
   sessionId: string,
   runId: number,
   onEvent: (e: RunEvent) => void,
@@ -84,10 +85,25 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    await invoke('run_prompt', { prompt, model, provider, sessionId, runId, onEvent: channel })
+    // `workspace` (a directory) becomes the tools' working directory; '' = none.
+    await invoke('run_prompt', {
+      prompt,
+      model,
+      provider,
+      workspace: workspace || null,
+      sessionId,
+      runId,
+      onEvent: channel,
+    })
     return
   }
   await mockRun(prompt, model, onEvent, signal)
+}
+
+/** Whether `path` is an existing directory (validates a chosen workspace). */
+export async function pathIsDir(path: string): Promise<boolean> {
+  if (isTauri()) return await invoke<boolean>('path_is_dir', { path })
+  return path.trim().length > 0 // preview: accept any non-empty path
 }
 
 // ── session / slash-command commands (Tauri; no-ops or estimates in preview) ──

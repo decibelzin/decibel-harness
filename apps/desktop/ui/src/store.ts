@@ -74,6 +74,20 @@ export function applyTheme(t: Theme): void {
   else root.setAttribute('data-theme', t)
 }
 
+// The workspace: the directory the shell/fs/search tools operate in. '' = the
+// app's own directory. Persisted so it survives restarts.
+const [workspace, setWorkspaceSignal] = createSignal<string>(readPref<string>('decibel.workspace', ''))
+export { workspace }
+export function setWorkspace(dir: string): void {
+  setWorkspaceSignal(dir)
+  writePref('decibel.workspace', dir)
+}
+/** The workspace's last path segment, for a compact chip label. */
+export function workspaceName(): string {
+  const w = workspace().replace(/[\\/]+$/, '')
+  return w ? (w.split(/[\\/]/).pop() || w) : ''
+}
+
 // ── conversation ─────────────────────────────────────────────────────────────
 export interface TextBlock {
   kind: 'text'
@@ -105,6 +119,8 @@ export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
 // Drives the composer's model picker so /model can open it from anywhere.
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false)
+// Opens the workspace-directory picker (from the composer chip or the sidebar).
+export const [workspacePanelOpen, setWorkspacePanelOpen] = createSignal(false)
 // The composer draft lives in the store so it survives the hero↔docked Composer
 // remount at the empty/non-empty boundary (otherwise a typed draft is lost).
 export const [composerDraft, setComposerDraft] = createSignal('')
@@ -148,7 +164,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, workspace(), sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch

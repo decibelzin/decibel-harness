@@ -38,6 +38,9 @@ pub struct AgentConfig {
     pub max_tokens: Option<u64>,
     /// Hard bound on steps per turn — the runaway-tool-loop backstop.
     pub max_steps: u64,
+    /// Session working directory the shell/filesystem/search tools default to,
+    /// when set (the "workspace"). `None` uses the process directory.
+    pub cwd: Option<String>,
 }
 
 impl AgentConfig {
@@ -50,12 +53,19 @@ impl AgentConfig {
             temperature: None,
             max_tokens: None,
             max_steps: 16,
+            cwd: None,
         }
     }
 
     /// Set the system prompt.
     pub fn with_system(mut self, system: impl Into<String>) -> Self {
         self.system = Some(system.into());
+        self
+    }
+
+    /// Set the session working directory (the workspace) for tool execution.
+    pub fn with_cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.cwd = Some(cwd.into());
         self
     }
 
@@ -276,7 +286,10 @@ pub async fn run_turn_observed(
 
             on_progress(Progress::ToolCall { name: &name, args: &raw_args });
             let arguments = parse_arguments(&raw_args);
-            let ctx = ExecCtx::with_token(cancel.clone());
+            let mut ctx = ExecCtx::with_token(cancel.clone());
+            if let Some(cwd) = &config.cwd {
+                ctx = ctx.with_cwd(cwd.clone());
+            }
             let tool_name = name.clone();
             let result = tools
                 .execute(ToolCall { call_id: call_id.clone(), name, arguments }, &ctx)

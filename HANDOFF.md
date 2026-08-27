@@ -219,10 +219,22 @@ and shows both key fields. Not yet run live against either provider (needs keys)
 - **Turn/step budget** UI, token/usage meter — `/context` shows usage on demand;
   a persistent meter in the composer is still TODO. AgentConfig.max_steps is fixed at 16.
 
-**F. Larger parity (later)** — real workspaces (cwd per session honored by the
-shell/fs tools; the sidebar chip is decorative today), plan/act mode + permission
-presets (the mode chips are decorative), goals, background jobs, skills catalog,
-MCP client, Code Mode (run_code + SDK), image attachments, message feedback.
+**F. Larger parity (later)** — plan/act mode + permission presets (the "Standard
+mode"/"Full access" chips are still decorative), goals, background jobs, skills
+catalog, MCP client, Code Mode (run_code + SDK), image attachments, message
+feedback.
+
+**User asked for the "make everything functional" set (2026-08-27)** — the
+decorative UI (workspace chip, sidebar workspace, Standard mode, Full access, +,
+sidebar icons) built in phases:
+- [x] **Phase 1 — real workspace (DONE):** the workspace chip + sidebar pick a
+  real directory; the shell/fs/search tools operate in it (`ExecCtx.cwd`/`resolve`,
+  `AgentConfig.with_cwd`, `run_prompt(workspace)`, `path_is_dir` validator,
+  persisted in localStorage). The fake "fullbreachtoolkit" entry is gone.
+- [ ] Phase 2 — session persistence + real sidebar (backlog C): list/open/rename/
+  delete saved sessions; the sidebar session list is still a single static entry.
+- [ ] Phase 3 — plan/act mode (Standard mode chip) + permission preset (Full access).
+- [ ] Phase 4 — image attachments (the `+` button; for the vision models).
 
 **Minor known limitations**
 - Markdown links open via `window.open(..., 'noopener,noreferrer')`; in a Tauri

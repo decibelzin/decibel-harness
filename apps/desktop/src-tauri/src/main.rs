@@ -209,6 +209,7 @@ async fn run_prompt(
     prompt: String,
     model: String,
     provider: String,
+    workspace: Option<String>,
     session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
@@ -240,7 +241,11 @@ async fn run_prompt(
     // behind us instead of forking a blank session.
     let handle = session_handle(&sessions, &session_id);
     let mut session = handle.lock().await;
-    let config = AgentConfig::new(&provider, &model).with_system(SYSTEM).with_max_tokens(1200);
+    let mut config = AgentConfig::new(&provider, &model).with_system(SYSTEM).with_max_tokens(1200);
+    // The chosen workspace becomes the tools' working directory for this run.
+    if let Some(ws) = workspace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        config = config.with_cwd(ws);
+    }
     let message = Message::human(next_msg_id("u"), vec![ContentBlock::text(prompt)]);
 
     let sink = on_event.clone();
@@ -303,6 +308,13 @@ async fn run_prompt(
     }
     let _ = on_event.send(RunEvt::Done);
     Ok(())
+}
+
+/// Whether `path` is an existing directory — used to validate a chosen workspace
+/// before the frontend accepts it.
+#[tauri::command]
+fn path_is_dir(path: String) -> bool {
+    !path.trim().is_empty() && std::path::Path::new(path.trim()).is_dir()
 }
 
 /// Drop a conversation's session (a new one starts on the next run). Called by
@@ -444,7 +456,8 @@ fn main() {
             cancel_run,
             clear_session,
             session_context,
-            compact_session
+            compact_session,
+            path_is_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running Decibel");

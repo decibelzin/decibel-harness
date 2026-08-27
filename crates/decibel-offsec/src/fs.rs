@@ -41,11 +41,11 @@ impl Tool for ReadFileTool {
         }
     }
 
-    async fn execute(&self, arguments: Value, _ctx: &ExecCtx) -> Result<Value, ToolError> {
-        let path = arg_str(&arguments, "path")?;
+    async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
+        let path = ctx.resolve(&arg_str(&arguments, "path")?);
         let raw = tokio::fs::read_to_string(&path)
             .await
-            .map_err(|e| ToolError::execution(format!("cannot read {path}: {e}")))?;
+            .map_err(|e| ToolError::execution(format!("cannot read {}: {e}", path.display())))?;
 
         let total_lines = raw.lines().count() as u64;
         let offset = arg_u64_opt(&arguments, "offset").unwrap_or(1).max(1);
@@ -62,7 +62,7 @@ impl Tool for ReadFileTool {
         let (content, truncated) = truncate_bytes(&selected, MAX_READ_BYTES);
 
         Ok(json!({
-            "path": path,
+            "path": path.display().to_string(),
             "content": content,
             "offset": offset,
             "total_lines": total_lines,
@@ -107,7 +107,7 @@ impl Tool for WriteFileTool {
     }
 
     async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
-        let path = arg_str(&arguments, "path")?;
+        let path = ctx.resolve(&arg_str(&arguments, "path")?);
         // content may legitimately be empty, so read it directly rather than via arg_str.
         let content = arguments
             .get("content")
@@ -119,7 +119,7 @@ impl Tool for WriteFileTool {
         if ctx.is_cancelled() {
             return Err(ToolError::Aborted);
         }
-        if let Some(parent) = std::path::Path::new(&path).parent() {
+        if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 tokio::fs::create_dir_all(parent)
                     .await
@@ -128,9 +128,9 @@ impl Tool for WriteFileTool {
         }
         tokio::fs::write(&path, content)
             .await
-            .map_err(|e| ToolError::execution(format!("cannot write {path}: {e}")))?;
+            .map_err(|e| ToolError::execution(format!("cannot write {}: {e}", path.display())))?;
 
-        Ok(json!({ "path": path, "bytes_written": content.len() }))
+        Ok(json!({ "path": path.display().to_string(), "bytes_written": content.len() }))
     }
 
     fn render(&self, _arguments: &Value, value: &Value) -> Vec<ContentBlock> {
@@ -168,7 +168,7 @@ impl Tool for StrReplaceTool {
     }
 
     async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
-        let path = arg_str(&arguments, "path")?;
+        let path = ctx.resolve(&arg_str(&arguments, "path")?);
         let old_str = arg_str(&arguments, "old_str")?;
         let new_str = arguments
             .get("new_str")
@@ -177,14 +177,15 @@ impl Tool for StrReplaceTool {
 
         let content = tokio::fs::read_to_string(&path)
             .await
-            .map_err(|e| ToolError::execution(format!("cannot read {path}: {e}")))?;
+            .map_err(|e| ToolError::execution(format!("cannot read {}: {e}", path.display())))?;
         let matches = content.matches(&old_str).count();
         if matches == 0 {
-            return Err(ToolError::execution(format!("`old_str` not found in {path}")));
+            return Err(ToolError::execution(format!("`old_str` not found in {}", path.display())));
         }
         if matches > 1 {
             return Err(ToolError::execution(format!(
-                "`old_str` appears {matches} times in {path}; it must be unique — include more context"
+                "`old_str` appears {matches} times in {}; it must be unique — include more context",
+                path.display()
             )));
         }
         // Observe cancellation before the irreversible write (same reason as write_file).
@@ -194,9 +195,9 @@ impl Tool for StrReplaceTool {
         let updated = content.replacen(&old_str, new_str, 1);
         tokio::fs::write(&path, &updated)
             .await
-            .map_err(|e| ToolError::execution(format!("cannot write {path}: {e}")))?;
+            .map_err(|e| ToolError::execution(format!("cannot write {}: {e}", path.display())))?;
 
-        Ok(json!({ "path": path, "replaced": true }))
+        Ok(json!({ "path": path.display().to_string(), "replaced": true }))
     }
 
     fn render(&self, _arguments: &Value, value: &Value) -> Vec<ContentBlock> {
@@ -247,6 +248,34 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r3["content"], "LINE 1\nline two\n");
+    }
+
+    #[tokio::test]
+    async fn tools_resolve_relative_paths_against_the_session_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ExecCtx::new().with_cwd(dir.path());
+
+        // A RELATIVE path writes into the workspace, not the process directory.
+        WriteFileTool
+            .execute(json!({ "path": "sub/note.txt", "content": "in workspace" }), &ctx)
+            .await
+            .unwrap();
+        assert!(dir.path().join("sub").join("note.txt").exists());
+
+        // Reading the same relative path resolves to the same workspace file.
+        let r = ReadFileTool
+            .execute(json!({ "path": "sub/note.txt" }), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(r["content"], "in workspace");
+
+        // An ABSOLUTE path ignores the cwd.
+        let abs = dir.path().join("abs.txt");
+        WriteFileTool
+            .execute(json!({ "path": abs.to_str().unwrap(), "content": "abs" }), &ctx)
+            .await
+            .unwrap();
+        assert!(abs.exists());
     }
 
     #[tokio::test]

@@ -3,6 +3,8 @@
 //! and matches per line. Results are capped so a broad search never floods the
 //! model.
 
+use std::path::{Path, PathBuf};
+
 use async_trait::async_trait;
 use decibel_llm::{ContentBlock, ToolSchema};
 use decibel_tools::{ExecCtx, Tool, ToolError};
@@ -12,6 +14,15 @@ use serde_json::{json, Value};
 use walkdir::WalkDir;
 
 use crate::util::{arg_str, arg_str_opt, arg_u64_opt};
+
+/// The search root: an explicit `root` (resolved against the session cwd), else
+/// the session cwd, else the process directory.
+fn search_root(arguments: &Value, ctx: &ExecCtx) -> PathBuf {
+    match arg_str_opt(arguments, "root") {
+        Some(r) => ctx.resolve(&r),
+        None => ctx.cwd().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")),
+    }
+}
 
 /// Cap on returned paths / matches.
 const MAX_RESULTS: usize = 400;
@@ -46,7 +57,7 @@ impl Tool for GlobTool {
 
     async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
         let pattern = arg_str(&arguments, "pattern")?;
-        let root = arg_str_opt(&arguments, "root").unwrap_or_else(|| ".".to_string());
+        let root = search_root(&arguments, ctx);
         let glob = Glob::new(&pattern)
             .map_err(|e| ToolError::invalid_args(format!("invalid glob `{pattern}`: {e}")))?
             .compile_matcher();
@@ -124,7 +135,7 @@ impl Tool for GrepTool {
 
     async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
         let pattern = arg_str(&arguments, "pattern")?;
-        let root = arg_str_opt(&arguments, "root").unwrap_or_else(|| ".".to_string());
+        let root = search_root(&arguments, ctx);
         let cap = arg_u64_opt(&arguments, "max_results").unwrap_or(MAX_RESULTS as u64) as usize;
         let re = Regex::new(&pattern)
             .map_err(|e| ToolError::invalid_args(format!("invalid regex `{pattern}`: {e}")))?;
