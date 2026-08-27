@@ -1,0 +1,23 @@
+[package]
+name = "decibel-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# MCP (Model Context Protocol) CLIENT for Decibel Harness: connects to external
+# MCP tool servers (HexStrike AI, Kali-MCP, ...) over newline-delimited JSON-RPC
+# 2.0 on stdio, and surfaces each remote tool as a native `decibel_tools::Tool`
+# (prefixed `mcp_<server>_<tool>`) so the agent loop dispatches to it like any
+# built-in. The protocol lives on a stream-generic connection so it is testable
+# against an in-memory fake server (no subprocess, no network).
+
+[lib]
+name = "decibel_mcp"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"
+decibel-tools = { path = "../decibel-tools" }
+decibel-llm = { path = "../decibel-llm" }

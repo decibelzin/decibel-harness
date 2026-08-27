@@ -548,6 +548,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "decibel-mcp"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "decibel-llm",
+ "decibel-tools",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "decibel-offsec"
 version = "0.1.0"
 dependencies = [
@@ -608,6 +620,7 @@ dependencies = [
  "decibel-tools",
  "dotenvy",
  "futures-core",
+ "serde",
  "serde_json",
  "tokio",
 ]
