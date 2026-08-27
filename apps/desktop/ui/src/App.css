@@ -119,8 +119,13 @@
   display: flex;
   flex-shrink: 0;
 }
+.ws-item {
+  margin: 0 8px;
+  width: auto;
+}
 .ws-empty {
-  width: 100%;
+  margin: 0 8px;
+  width: auto;
   text-align: left;
   padding: 7px 8px;
   color: var(--text-faint);
@@ -145,6 +150,69 @@
 }
 .ws-input:focus {
   border-color: var(--accent);
+}
+
+/* sidebar sessions list */
+.sess-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 2px 8px 8px;
+}
+.sess-item {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+  margin: 1px 0;
+}
+.sess-item:hover,
+.sess-item.active {
+  background: var(--surface-2);
+}
+.sess-item.active .sess-open {
+  color: var(--text);
+}
+.sess-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 7px 9px;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sess-del {
+  opacity: 0;
+  color: var(--text-faint);
+  padding: 4px 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.sess-item:hover .sess-del {
+  opacity: 1;
+}
+.sess-del:hover {
+  color: var(--danger);
+}
+.sess-edit {
+  flex: 1;
+  min-width: 0;
+  margin: 3px 4px;
+  background: var(--surface-3);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 7px;
+  font-size: 13px;
+  outline: none;
+}
+.sess-empty {
+  padding: 10px 9px;
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .ws-session {
   margin: 2px 0 2px 14px;

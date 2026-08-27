@@ -1,9 +1,10 @@
 import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
-import { deleteApiKey, hasApiKey, isTauri, pathIsDir, saveApiKey, type ModelInfo } from './api'
+import { deleteApiKey, hasApiKey, isTauri, pathIsDir, saveApiKey, type ModelInfo, type SessionMeta } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
 import {
+  activeSessionId,
   applyTheme,
   cancel,
   COMMANDS,
@@ -11,7 +12,12 @@ import {
   conversation,
   isCommand,
   modelPickerOpen,
+  openSession,
+  refreshSessions,
+  removeSession,
+  renameSessionTitle,
   runSlashCommand,
+  sessions,
   setComposerDraft,
   settingsOpen,
   setModelPickerOpen,
@@ -108,6 +114,17 @@ const IconSwitch = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points
 
 // ── sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar() {
+  const [editing, setEditing] = createSignal<string | null>(null)
+  const [editVal, setEditVal] = createSignal('')
+  onMount(refreshSessions)
+  const startRename = (s: SessionMeta) => {
+    setEditing(s.id)
+    setEditVal(s.title)
+  }
+  const commitRename = (id: string) => {
+    void renameSessionTitle(id, editVal())
+    setEditing(null)
+  }
   return (
     <aside class="sidebar">
       <div class="brand">
@@ -125,17 +142,52 @@ function Sidebar() {
           <button title="Set workspace" onClick={() => setWorkspacePanelOpen(true)}><IconAdd /></button>
         </span>
       </div>
-      <div class="ws-list">
-        <Show
-          when={workspaceName()}
-          fallback={<button class="ws-empty" onClick={() => setWorkspacePanelOpen(true)}>Set a workspace…</button>}
-        >
-          <button class="ws-item" onClick={() => setWorkspacePanelOpen(true)} title={workspace()}>
-            <span class="fico"><IconFolder /></span>
-            {workspaceName()}
-          </button>
+      <Show
+        when={workspaceName()}
+        fallback={<button class="ws-empty" onClick={() => setWorkspacePanelOpen(true)}>Set a workspace…</button>}
+      >
+        <button class="ws-item" onClick={() => setWorkspacePanelOpen(true)} title={workspace()}>
+          <span class="fico"><IconFolder /></span>
+          {workspaceName()}
+        </button>
+      </Show>
+      <div class="ws-header">
+        <span class="label">Sessions</span>
+        <span class="actions">
+          <button title="Refresh" onClick={() => refreshSessions()}><IconSearch /></button>
+        </span>
+      </div>
+      <div class="sess-list">
+        <For each={sessions()}>
+          {(s) => (
+            <div class={`sess-item ${s.id === activeSessionId() ? 'active' : ''}`}>
+              <Show
+                when={editing() === s.id}
+                fallback={
+                  <button class="sess-open" onDblClick={() => startRename(s)} onClick={() => openSession(s.id)} title={s.title}>
+                    {s.title}
+                  </button>
+                }
+              >
+                <input
+                  class="sess-edit"
+                  value={editVal()}
+                  ref={(el) => setTimeout(() => el.focus(), 0)}
+                  onInput={(e) => setEditVal(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(s.id)
+                    if (e.key === 'Escape') setEditing(null)
+                  }}
+                  onBlur={() => setEditing(null)}
+                />
+              </Show>
+              <button class="sess-del" title="Delete session" onClick={() => removeSession(s.id)}>✕</button>
+            </div>
+          )}
+        </For>
+        <Show when={sessions().length === 0}>
+          <div class="sess-empty">No saved sessions yet — start one below.</div>
         </Show>
-        <div class="ws-session active">Current session</div>
       </div>
       <button class="settings" onClick={() => setSettingsOpen(true)}><IconGear /> Settings</button>
     </aside>

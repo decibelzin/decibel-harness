@@ -132,6 +132,41 @@ export async function compactSession(sessionId: string, model: string, provider:
   return ''
 }
 
+// ── saved sessions (sidebar; disk-backed in Tauri, empty in preview) ──────────
+export interface SessionMeta {
+  id: string
+  title: string
+  updated_ms: number
+}
+/** One block of a reconstructed transcript (from `load_session`). */
+export interface DisplayBlock {
+  kind: string
+  text?: string
+  name?: string
+  args?: string
+  state?: string
+  output?: string
+}
+export interface DisplayMsg {
+  role: string
+  blocks: DisplayBlock[]
+}
+
+export async function listSessions(): Promise<SessionMeta[]> {
+  if (isTauri()) return await invoke<SessionMeta[]>('list_sessions')
+  return []
+}
+export async function loadSession(id: string): Promise<DisplayMsg[]> {
+  if (isTauri()) return await invoke<DisplayMsg[]>('load_session', { id })
+  return []
+}
+export async function deleteSession(id: string): Promise<void> {
+  if (isTauri()) await invoke('delete_session', { id })
+}
+export async function renameSession(id: string, title: string): Promise<void> {
+  if (isTauri()) await invoke('rename_session', { id, title })
+}
+
 /** A believable mock so the conversation UI is demonstrable without a key. It
  * exercises every rich tool card (nmap, shell, http, finding) and markdown. */
 async function mockRun(

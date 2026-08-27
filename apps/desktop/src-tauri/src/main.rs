@@ -6,17 +6,19 @@
 //! a streaming agent run driven by the offensive toolkit.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::ipc::Channel;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use decibel_agent::{run_turn, run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
-use decibel_core::{EventKind, Session, SurfaceIntent};
-use decibel_llm::{ContentBlock, Message};
+use decibel_core::{persist, EventKind, Session, SurfaceIntent};
+use decibel_llm::{ContentBlock, Message, MessageSource};
 use decibel_offsec::register_all;
 use decibel_openrouter::OpenRouterAdapter;
 use decibel_tools::ToolRegistry;
@@ -206,6 +208,7 @@ fn cancel_run(run_id: u64, runs: State<'_, RunRegistry>) {
 /// `run_id` so `cancel_run` can stop it cooperatively.
 #[tauri::command]
 async fn run_prompt(
+    app: AppHandle,
     prompt: String,
     model: String,
     provider: String,
@@ -276,7 +279,9 @@ async fn run_prompt(
     )
     .await;
 
-    drop(session); // release the conversation lock before the run bookkeeping
+    // Save the conversation (including this turn) to disk, then release the lock.
+    persist_session(&app, &session_id, &session);
+    drop(session);
     if let Ok(mut map) = runs.0.lock() {
         map.remove(&run_id);
     }
@@ -392,6 +397,7 @@ fn session_context(session_id: String, sessions: State<'_, Sessions>) -> Context
 /// drops the conversation.
 #[tauri::command]
 async fn compact_session(
+    app: AppHandle,
     session_id: String,
     model: String,
     provider: String,
@@ -437,7 +443,231 @@ async fn compact_session(
         SurfaceIntent::append_bare(),
     );
     *guard = fresh;
+    persist_session(&app, &session_id, &guard);
     Ok(summary)
+}
+
+// ── session persistence (disk) ───────────────────────────────────────────────
+
+/// The directory saved session logs live in (`{app_data}/sessions`), created if
+/// needed.
+fn sessions_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("sessions");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Metadata sidecar for a saved session (what the sidebar lists).
+#[derive(Serialize, Deserialize, Clone)]
+struct SessionMeta {
+    id: String,
+    title: String,
+    updated_ms: u64,
+}
+
+/// A short title for a session — its first user message, else "New session".
+fn derive_title(session: &Session) -> String {
+    for m in session.derive_messages() {
+        if matches!(m.source, MessageSource::Human) {
+            let text = m.content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join(" ");
+            let t = text.trim();
+            if !t.is_empty() {
+                return t.chars().take(60).collect();
+            }
+        }
+    }
+    "New session".to_string()
+}
+
+/// Write a session's log + metadata to disk. Called after each turn/compaction so
+/// the conversation survives a restart. A renamed title is preserved.
+fn persist_session(app: &AppHandle, id: &str, session: &Session) {
+    if session.events().is_empty() {
+        return;
+    }
+    let Ok(dir) = sessions_dir(app) else { return };
+    if let Ok(jsonl) = persist::to_jsonl(session) {
+        let _ = std::fs::write(dir.join(format!("{id}.jsonl")), jsonl);
+    }
+    let meta_path = dir.join(format!("{id}.meta.json"));
+    let kept_title = std::fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<SessionMeta>(&s).ok())
+        .map(|m| m.title)
+        .filter(|t| !t.trim().is_empty());
+    let meta = SessionMeta {
+        id: id.to_string(),
+        title: kept_title.unwrap_or_else(|| derive_title(session)),
+        updated_ms: now_ms(),
+    };
+    if let Ok(js) = serde_json::to_string(&meta) {
+        let _ = std::fs::write(meta_path, js);
+    }
+}
+
+/// One block of a reconstructed transcript (matches the frontend `Block`).
+#[derive(Serialize, Clone)]
+struct DisplayBlock {
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    args: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<String>,
+}
+
+/// One message of a reconstructed transcript (matches the frontend `Msg`).
+#[derive(Serialize, Clone)]
+struct DisplayMsg {
+    role: String,
+    blocks: Vec<DisplayBlock>,
+}
+
+/// Rebuild the frontend display transcript from a session's derived messages, so
+/// a reopened session shows its text + tool cards (the tool's rendered output; the
+/// structured value for a live card is not stored, so cards show text only).
+fn reconstruct_display(session: &Session) -> Vec<DisplayMsg> {
+    let mut msgs: Vec<DisplayMsg> = Vec::new();
+    let mut tool_at: HashMap<String, (usize, usize)> = HashMap::new();
+    for m in session.derive_messages() {
+        match &m.source {
+            MessageSource::Human => {
+                let text = m.content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("");
+                msgs.push(DisplayMsg {
+                    role: "user".into(),
+                    blocks: vec![DisplayBlock { kind: "text".into(), text: Some(text), name: None, args: None, state: None, output: None }],
+                });
+            }
+            MessageSource::Model { .. } => {
+                let mut blocks = Vec::new();
+                for b in &m.content {
+                    match b {
+                        ContentBlock::Text { text } if !text.is_empty() => blocks.push(DisplayBlock {
+                            kind: "text".into(),
+                            text: Some(text.clone()),
+                            name: None, args: None, state: None, output: None,
+                        }),
+                        ContentBlock::ToolCall { id, name, arguments } => {
+                            tool_at.insert(id.as_str().to_string(), (msgs.len(), blocks.len()));
+                            blocks.push(DisplayBlock {
+                                kind: "tool".into(),
+                                name: Some(name.clone()),
+                                args: Some(arguments.clone()),
+                                state: Some("ok".into()),
+                                text: None, output: None,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if !blocks.is_empty() {
+                    msgs.push(DisplayMsg { role: "assistant".into(), blocks });
+                }
+            }
+            MessageSource::Tool { call_id } => {
+                if let Some(&(mi, bi)) = tool_at.get(call_id.as_str()) {
+                    let (output, is_error) = m
+                        .content
+                        .iter()
+                        .find_map(|b| match b {
+                            ContentBlock::ToolResult { content, is_error, .. } => Some((
+                                content.iter().filter_map(ContentBlock::as_text).collect::<Vec<_>>().join("\n"),
+                                *is_error,
+                            )),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if let Some(block) = msgs.get_mut(mi).and_then(|msg| msg.blocks.get_mut(bi)) {
+                        block.output = Some(output);
+                        block.state = Some(if is_error { "error".into() } else { "ok".into() });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    msgs
+}
+
+/// List saved sessions (newest first) for the sidebar.
+#[tauri::command]
+fn list_sessions(app: AppHandle) -> Vec<SessionMeta> {
+    let Ok(dir) = sessions_dir(&app) else { return Vec::new() };
+    let mut out: Vec<SessionMeta> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.to_string_lossy().ends_with(".meta.json") {
+                if let Ok(m) = std::fs::read_to_string(&path).and_then(|s| {
+                    serde_json::from_str::<SessionMeta>(&s).map_err(std::io::Error::other)
+                }) {
+                    out.push(m);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+    out
+}
+
+/// Load a saved session: reinstate it as the live session (so the next run
+/// continues it) and return its reconstructed display transcript.
+#[tauri::command]
+fn load_session(
+    app: AppHandle,
+    id: String,
+    sessions: State<'_, Sessions>,
+) -> Result<Vec<DisplayMsg>, String> {
+    let dir = sessions_dir(&app)?;
+    let jsonl = std::fs::read_to_string(dir.join(format!("{id}.jsonl"))).map_err(|e| e.to_string())?;
+    let session = persist::from_jsonl(id.clone(), &jsonl).map_err(|e| e.to_string())?;
+    let display = reconstruct_display(&session);
+    if let Ok(mut map) = sessions.0.lock() {
+        map.insert(id, Arc::new(tokio::sync::Mutex::new(session)));
+    }
+    Ok(display)
+}
+
+/// Delete a saved session (files + in-memory entry).
+#[tauri::command]
+fn delete_session(app: AppHandle, id: String, sessions: State<'_, Sessions>) {
+    if let Ok(dir) = sessions_dir(&app) {
+        let _ = std::fs::remove_file(dir.join(format!("{id}.jsonl")));
+        let _ = std::fs::remove_file(dir.join(format!("{id}.meta.json")));
+    }
+    if let Ok(mut map) = sessions.0.lock() {
+        map.remove(&id);
+    }
+}
+
+/// Rename a saved session (updates its metadata title).
+#[tauri::command]
+fn rename_session(app: AppHandle, id: String, title: String) -> Result<(), String> {
+    let dir = sessions_dir(&app)?;
+    let meta_path = dir.join(format!("{id}.meta.json"));
+    let mut meta = std::fs::read_to_string(&meta_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<SessionMeta>(&s).ok())
+        .unwrap_or(SessionMeta { id: id.clone(), title: String::new(), updated_ms: now_ms() });
+    meta.title = title.trim().chars().take(80).collect();
+    if meta.title.is_empty() {
+        return Err("empty title".into());
+    }
+    std::fs::write(meta_path, serde_json::to_string(&meta).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -457,7 +687,11 @@ fn main() {
             clear_session,
             session_context,
             compact_session,
-            path_is_dir
+            path_is_dir,
+            list_sessions,
+            load_session,
+            delete_session,
+            rename_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running Decibel");

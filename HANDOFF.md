@@ -231,8 +231,14 @@ sidebar icons) built in phases:
   real directory; the shell/fs/search tools operate in it (`ExecCtx.cwd`/`resolve`,
   `AgentConfig.with_cwd`, `run_prompt(workspace)`, `path_is_dir` validator,
   persisted in localStorage). The fake "fullbreachtoolkit" entry is gone.
-- [ ] Phase 2 — session persistence + real sidebar (backlog C): list/open/rename/
-  delete saved sessions; the sidebar session list is still a single static entry.
+- [x] **Phase 2 — session persistence + real sidebar (DONE):** sessions are saved
+  to `{app_data}/sessions/{id}.jsonl` (+ `.meta.json`) after each turn/compaction;
+  the sidebar lists them (newest first) with open / inline-rename (double-click) /
+  delete, highlighting the active one. `list_sessions`/`load_session` (reconstructs
+  the display transcript from the log) / `delete_session`/`rename_session`; the
+  in-memory session is reinstated on load so multi-turn continues. Reloaded tool
+  cards show the tool's rendered output text (the structured value isn't stored).
+  **Needs the live app to exercise disk persistence (preview has none).**
 - [ ] Phase 3 — plan/act mode (Standard mode chip) + permission preset (Full access).
 - [ ] Phase 4 — image attachments (the `+` button; for the vision models).
 

@@ -1,7 +1,20 @@
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 
-import { clearSession, compactSession, fetchModels, runPrompt, sessionContext, type ModelInfo } from './api'
+import {
+  clearSession,
+  compactSession,
+  deleteSession,
+  fetchModels,
+  listSessions,
+  loadSession,
+  renameSession,
+  runPrompt,
+  sessionContext,
+  type DisplayMsg,
+  type ModelInfo,
+  type SessionMeta,
+} from './api'
 
 // ── model catalog ───────────────────────────────────────────────────────────
 export const [models, setModels] = createSignal<ModelInfo[]>([])
@@ -133,7 +146,61 @@ let activeRunId = 0
 // Conversation identity for the backend's multi-turn memory. A new one starts a
 // fresh backend session; /clear (newSession) rotates it and drops the old one.
 let sessionCounter = 0
-let sessionId = `sess-${++sessionCounter}`
+let sessionId = `sess-${Date.now()}-${++sessionCounter}`
+
+// The active conversation id, mirrored as a signal so the sidebar can highlight
+// which saved session is open.
+export const [activeSessionId, setActiveSessionId] = createSignal(sessionId)
+// Saved sessions listed in the sidebar (disk-backed in the desktop app).
+export const [sessions, setSessions] = createSignal<SessionMeta[]>([])
+
+/** Reload the saved-session list (sidebar). */
+export async function refreshSessions(): Promise<void> {
+  try {
+    setSessions(await listSessions())
+  } catch {
+    /* browser preview has no persistence */
+  }
+}
+
+function mapDisplayMsg(d: DisplayMsg): Msg {
+  const role = d.role === 'user' ? 'user' : d.role === 'assistant' ? 'assistant' : 'system'
+  return {
+    role,
+    blocks: d.blocks.map((b) =>
+      b.kind === 'tool'
+        ? { kind: 'tool', name: b.name ?? '', args: b.args ?? '', state: (b.state as any) ?? 'ok', output: b.output }
+        : { kind: 'text', text: b.text ?? '' },
+    ),
+  }
+}
+
+/** Open a saved session: reload its transcript and continue its backend memory. */
+export async function openSession(id: string): Promise<void> {
+  if (running()) cancel()
+  try {
+    const display = await loadSession(id)
+    sessionId = id
+    setActiveSessionId(id)
+    setConversation('list', display.map(mapDisplayMsg))
+  } catch {
+    /* ignore a missing/corrupt session */
+  }
+}
+
+/** Delete a saved session (and start fresh if it's the open one). */
+export async function removeSession(id: string): Promise<void> {
+  await deleteSession(id).catch(() => {})
+  if (id === sessionId) newSession()
+  else void refreshSessions()
+}
+
+/** Rename a saved session's title. */
+export async function renameSessionTitle(id: string, title: string): Promise<void> {
+  if (!title.trim()) return
+  await renameSession(id, title).catch(() => {})
+  void refreshSessions()
+}
 
 /** Append a standalone system message (slash-command output). */
 function pushSystem(blocks: Block[]): void {
@@ -143,8 +210,10 @@ function pushSystem(blocks: Block[]): void {
 export function newSession(): void {
   cancel()
   void clearSession(sessionId).catch(() => {})
-  sessionId = `sess-${++sessionCounter}`
+  sessionId = `sess-${Date.now()}-${++sessionCounter}`
+  setActiveSessionId(sessionId)
   setConversation('list', [])
+  void refreshSessions()
 }
 
 export async function send(text: string): Promise<void> {
@@ -221,7 +290,11 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
       }
     }),
   )
-  if (e.type === 'done' || e.type === 'error') setRunning(false)
+  if (e.type === 'done' || e.type === 'error') {
+    setRunning(false)
+    // The turn was just persisted server-side; refresh the sidebar's session list.
+    if (e.type === 'done') void refreshSessions()
+  }
 }
 
 // ── slash commands ────────────────────────────────────────────────────────────
