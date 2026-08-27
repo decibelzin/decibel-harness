@@ -382,6 +382,52 @@
   color: var(--text-faint);
   font-size: 10px;
 }
+
+/* chip dropdown (mode / access) */
+.chip-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.chip-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 230px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+  padding: 5px;
+  z-index: 45;
+}
+.chip-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+}
+.chip-opt:hover {
+  background: var(--surface-2);
+}
+.chip-opt.sel {
+  background: var(--accent-soft);
+}
+.chip-opt.sel .co-label {
+  color: var(--accent-hover);
+}
+.co-label {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+}
+.co-desc {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 .composer textarea {
   width: 100%;
   resize: none;

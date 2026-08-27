@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager, State};
 use decibel_agent::{run_turn, run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
 use decibel_core::{persist, EventKind, Session, SurfaceIntent};
 use decibel_llm::{ContentBlock, Message, MessageSource};
-use decibel_offsec::register_all;
+use decibel_offsec::{register_named, FindingStore, ALL_TOOLS};
 use decibel_openrouter::OpenRouterAdapter;
 use decibel_tools::ToolRegistry;
 
@@ -55,6 +55,16 @@ exploitation → reporting loop. Use the shell tool to run installed tools (nmap
 the nmap tool for structured scans, the http tool for web requests, and the filesystem/search \
 tools to inspect the target. Record confirmed weaknesses with add_finding (include a MITRE ATT&CK \
 technique id). Be concise and act; do not ask for permission you already have.";
+
+/// Persona for PLAN mode: propose, don't execute (no tools are given either).
+const PLAN_SYSTEM: &str = "You are Decibel in PLAN MODE. Do NOT run any tools or take any action. \
+Produce a concise, numbered plan of the steps you would take for this engagement — for each step, the \
+tool or command you would use and why. The operator will review and approve before you act. End with \
+the single most important next step.";
+
+/// The non-destructive subset for READ-ONLY access: recon + inspection only, no
+/// shell / write / edit.
+const READONLY_TOOLS: &[&str] = &["nmap", "http", "read_file", "glob", "grep", "add_finding"];
 
 /// System prompt for a `/compact` summarization turn (no tools).
 const COMPACT_SYSTEM: &str = "You are compacting a red-team engagement transcript. Produce a dense, \
@@ -213,6 +223,8 @@ async fn run_prompt(
     model: String,
     provider: String,
     workspace: Option<String>,
+    mode: String,
+    access: String,
     session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
@@ -237,14 +249,23 @@ async fn run_prompt(
         map.insert(run_id, cancel.clone());
     }
 
+    // The toolset depends on mode + access: PLAN mode gets NO tools (propose only);
+    // READ-ONLY access gets the non-destructive subset; otherwise the full toolkit.
+    let plan = mode == "plan";
     let mut registry = ToolRegistry::new();
-    let _findings = register_all(&mut registry);
+    let findings = FindingStore::new();
+    if !plan {
+        let names: &[&str] = if access == "readonly" { READONLY_TOOLS } else { ALL_TOOLS };
+        register_named(&mut registry, names, &findings);
+    }
+    let _findings = findings;
     // Lock this conversation's session for the whole turn so the model sees prior
     // turns and a concurrent run/compact on the same conversation serializes
     // behind us instead of forking a blank session.
     let handle = session_handle(&sessions, &session_id);
     let mut session = handle.lock().await;
-    let mut config = AgentConfig::new(&provider, &model).with_system(SYSTEM).with_max_tokens(1200);
+    let system = if plan { PLAN_SYSTEM } else { SYSTEM };
+    let mut config = AgentConfig::new(&provider, &model).with_system(system).with_max_tokens(1200);
     // The chosen workspace becomes the tools' working directory for this run.
     if let Some(ws) = workspace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         config = config.with_cwd(ws);

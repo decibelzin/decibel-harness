@@ -239,7 +239,11 @@ sidebar icons) built in phases:
   in-memory session is reinstated on load so multi-turn continues. Reloaded tool
   cards show the tool's rendered output text (the structured value isn't stored).
   **Needs the live app to exercise disk persistence (preview has none).**
-- [ ] Phase 3 — plan/act mode (Standard mode chip) + permission preset (Full access).
+- [x] **Phase 3 — plan/act mode + access preset (DONE):** the "Standard mode" chip
+  is now an Act/Plan dropdown, the "Full access" chip a Full/Read-only dropdown
+  (persisted). `run_prompt(mode, access)`: **plan** → no tools + a plan-only system
+  prompt (propose, don't execute); **read-only** → the non-destructive tool subset
+  (nmap/http/read/glob/grep/add_finding — no shell/write/edit); else the full toolkit.
 - [ ] Phase 4 — image attachments (the `+` button; for the vision models).
 
 **Minor known limitations**

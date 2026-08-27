@@ -72,6 +72,8 @@ export async function runPrompt(
   model: string,
   provider: string,
   workspace: string,
+  mode: string,
+  access: string,
   sessionId: string,
   runId: number,
   onEvent: (e: RunEvent) => void,
@@ -85,12 +87,14 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    // `workspace` (a directory) becomes the tools' working directory; '' = none.
+    // `workspace` = tools' working directory; `mode` = act|plan; `access` = full|readonly.
     await invoke('run_prompt', {
       prompt,
       model,
       provider,
       workspace: workspace || null,
+      mode,
+      access,
       sessionId,
       runId,
       onEvent: channel,

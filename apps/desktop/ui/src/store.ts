@@ -101,6 +101,25 @@ export function workspaceName(): string {
   return w ? (w.split(/[\\/]/).pop() || w) : ''
 }
 
+// Run mode: 'act' executes tools; 'plan' proposes a plan and runs nothing.
+export type Mode = 'act' | 'plan'
+const [mode, setModeSignal] = createSignal<Mode>(readPref<Mode>('decibel.mode', 'act'))
+export { mode }
+export function setMode(m: Mode): void {
+  setModeSignal(m)
+  writePref('decibel.mode', m)
+}
+
+// Access preset: 'full' = every tool; 'readonly' = recon/inspection only (no
+// shell / write / edit).
+export type Access = 'full' | 'readonly'
+const [access, setAccessSignal] = createSignal<Access>(readPref<Access>('decibel.access', 'full'))
+export { access }
+export function setAccess(a: Access): void {
+  setAccessSignal(a)
+  writePref('decibel.access', a)
+}
+
 // ── conversation ─────────────────────────────────────────────────────────────
 export interface TextBlock {
   kind: 'text'
@@ -233,7 +252,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, workspace(), sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, workspace(), mode(), access(), sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch

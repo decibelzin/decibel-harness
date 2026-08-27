@@ -4,6 +4,7 @@ import './App.css'
 import { deleteApiKey, hasApiKey, isTauri, pathIsDir, saveApiKey, type ModelInfo, type SessionMeta } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
 import {
+  access,
   activeSessionId,
   applyTheme,
   cancel,
@@ -11,6 +12,7 @@ import {
   composerDraft,
   conversation,
   isCommand,
+  mode,
   modelPickerOpen,
   openSession,
   refreshSessions,
@@ -18,6 +20,8 @@ import {
   renameSessionTitle,
   runSlashCommand,
   sessions,
+  setAccess,
+  setMode,
   setComposerDraft,
   settingsOpen,
   setModelPickerOpen,
@@ -489,6 +493,39 @@ function ModelPanel(props: { onClose: () => void }) {
   )
 }
 
+// ── chip dropdown (mode / access) ─────────────────────────────────────────────
+interface ChipOption {
+  value: string
+  label: string
+  desc?: string
+}
+function ChipDropdown(props: { icon?: JSX.Element; value: string; options: ChipOption[]; onSelect: (v: string) => void }) {
+  const [open, setOpen] = createSignal(false)
+  const current = () => props.options.find((o) => o.value === props.value)
+  return (
+    <div class="chip-anchor">
+      <button class="chip" onClick={() => setOpen(!open())}>
+        {props.icon}
+        {current()?.label ?? props.value}
+        <span class="caret">▾</span>
+      </button>
+      <Show when={open()}>
+        <div class="backdrop" onClick={() => setOpen(false)} />
+        <div class="chip-menu">
+          <For each={props.options}>
+            {(o) => (
+              <button class={`chip-opt ${o.value === props.value ? 'sel' : ''}`} onClick={() => { props.onSelect(o.value); setOpen(false) }}>
+                <span class="co-label">{o.label}</span>
+                <Show when={o.desc}><span class="co-desc">{o.desc}</span></Show>
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
 // ── workspace picker ──────────────────────────────────────────────────────────
 function WorkspacePanel() {
   const [path, setPath] = createSignal(workspace())
@@ -624,7 +661,15 @@ function Composer() {
         <button class="chip" onClick={() => setWorkspacePanelOpen(true)} title={workspace() || 'Set the working directory'}>
           <span class="ico"><IconFolder /></span>{workspaceName() || 'workspace'}<span class="caret">▾</span>
         </button>
-        <button class="chip"><span class="ico"><IconMode /></span>Standard mode<span class="caret">▾</span></button>
+        <ChipDropdown
+          icon={<span class="ico"><IconMode /></span>}
+          value={mode()}
+          onSelect={(v) => setMode(v as 'act' | 'plan')}
+          options={[
+            { value: 'act', label: 'Act mode', desc: 'Run tools and act on the target' },
+            { value: 'plan', label: 'Plan mode', desc: 'Propose a plan; execute nothing' },
+          ]}
+        />
       </div>
       <textarea
         ref={taEl}
@@ -672,7 +717,14 @@ function Composer() {
       />
       <div class="composer-bottom">
         <button class="plus-btn" title="Attach"><IconAdd /></button>
-        <button class="chip">Full access<span class="caret">▾</span></button>
+        <ChipDropdown
+          value={access()}
+          onSelect={(v) => setAccess(v as 'full' | 'readonly')}
+          options={[
+            { value: 'full', label: 'Full access', desc: 'All tools — shell, write, edit, …' },
+            { value: 'readonly', label: 'Read-only', desc: 'Recon only — no shell / write / edit' },
+          ]}
+        />
         <span class="spacer" />
         <div class="model-anchor">
           <button class="model-chip" onClick={() => setModelPickerOpen(!modelPickerOpen())}>
