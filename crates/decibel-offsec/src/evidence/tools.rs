@@ -44,12 +44,6 @@ fn sidecar_path(artifact: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Serialize any value into the canonical tool value, mapping serde failure to an
-/// execution error.
-fn to_value<T: serde::Serialize>(v: T) -> Result<Value, ToolError> {
-    serde_json::to_value(v).map_err(|e| ToolError::execution(e.to_string()))
-}
-
 /// Read the whole artifact into memory (evidence must cover the entire file, so
 /// there is no triage cap — a huge artifact is fully buffered).
 async fn read_artifact(path: &Path) -> Result<Vec<u8>, ToolError> {

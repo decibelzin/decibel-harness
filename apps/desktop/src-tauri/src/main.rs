@@ -18,9 +18,10 @@ use tauri::{AppHandle, Manager, State};
 
 use decibel_agent::{run_turn, run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
 use decibel_core::{persist, EventKind, Session, SurfaceIntent};
-use decibel_llm::{ContentBlock, Message, MessageSource};
+use decibel_llm::{ContentBlock, LlmAdapter, Message, MessageSource};
 use decibel_offsec::{register_named, FindingStore, ALL_TOOLS};
 use decibel_openrouter::OpenRouterAdapter;
+use decibel_orchestrator::{build_engagement, orchestrator_system};
 use decibel_tools::ToolRegistry;
 
 /// Keyring service the provider keys are stored under (account = provider tag).
@@ -62,9 +63,38 @@ Produce a concise, numbered plan of the steps you would take for this engagement
 tool or command you would use and why. The operator will review and approve before you act. End with \
 the single most important next step.";
 
-/// The non-destructive subset for READ-ONLY access: recon + inspection only, no
-/// shell / write / edit.
-const READONLY_TOOLS: &[&str] = &["nmap", "http", "read_file", "glob", "grep", "add_finding"];
+/// The non-destructive subset for READ-ONLY access: passive/active-but-non-
+/// destructive recon, offline analyzers, read/search, local knowledge-graph +
+/// planning state, and finding/report reads — but NO shell/session execution,
+/// no PoC, no file writes/edits, and no weaponization (jwt_forge/crack,
+/// foundry_* PoC generators, evidence sealing). New destructive/executing tools
+/// must be left OUT of this list to stay act-mode-only.
+const READONLY_TOOLS: &[&str] = &[
+    // Recon (non-destructive — reads the target, never modifies it).
+    "nmap", "http", "http_probe", "port_scan", "dns", "dns_subdomains", "tls_inspect",
+    "content_discovery", "web_crawl",
+    // Read + search.
+    "read_file", "glob", "grep",
+    // Offline analyzers (no target I/O).
+    "jwt_parse", "cookie_audit", "oauth_audit", "graphql_plan", "iam_policy_audit",
+    "s3_buckets_from_text", "user_data_secrets", "k8s_audit", "tfstate_audit", "metadata_endpoints",
+    "bin_identify", "bin_strings", "bin_packer", "bin_rop", "bin_symbols_report", "solidity_scan",
+    "solidity_scan_file",
+    // CVE / reference intelligence.
+    "cve_lookup", "cve_by_package", "payload_search", "killchain_lookup", "killchain_suggest",
+    "cvss_score",
+    // Skills + on-demand injection shield.
+    "skills_find", "skills_load", "shield_scan",
+    // Knowledge graph (reads + local, non-destructive writes) + findings.
+    "kg_node", "kg_edge", "mark_crown_jewel", "kg_query", "kg_stats", "kg_neighbors", "kg_ingest",
+    "plan_chains", "promote_chain", "impact_analysis", "unexplored_surface",
+    "credential_reachability", "record_finding", "add_finding", "report_executive",
+    // OPPLAN objective tree (local planning state).
+    "add_objective", "update_objective", "get_objective", "list_objectives", "objective_expand",
+    "objective_collapse", "load_opplan",
+    // Engagement-plan validation + evidence verification (read-only).
+    "validate_plan_doc", "evidence_verify",
+];
 
 /// System prompt for a `/compact` summarization turn (no tools).
 const COMPACT_SYSTEM: &str = "You are compacting a red-team engagement transcript. Produce a dense, \
@@ -258,7 +288,10 @@ async fn run_prompt(
     };
 
     let (_, _, base_url) = provider_config(&provider);
-    let adapter = OpenRouterAdapter::new(Some(key)).with_base_url(base_url);
+    // `Arc<dyn LlmAdapter>` so the orchestrate path can hand a shared adapter to
+    // the specialist subagents (build_engagement) while the single-agent path
+    // still borrows it for run_turn_observed.
+    let adapter: Arc<dyn LlmAdapter> = Arc::new(OpenRouterAdapter::new(Some(key)).with_base_url(base_url));
 
     // Register this run's cancellation token so cancel_run can reach it.
     let cancel = TurnSignal::new();
@@ -266,22 +299,40 @@ async fn run_prompt(
         map.insert(run_id, cancel.clone());
     }
 
-    // The toolset depends on mode + access: PLAN mode gets NO tools (propose only);
-    // READ-ONLY access gets the non-destructive subset; otherwise the full toolkit.
+    // The toolset + persona depend on mode + access:
+    //  - PLAN: no tools (propose only).
+    //  - ORCHESTRATE: the multi-agent engagement — the orchestrator delegates each
+    //    kill-chain phase to the 17-specialist roster via the `delegate` tool.
+    //  - ACT: the single-agent toolkit; READ-ONLY access narrows it to the
+    //    non-destructive subset, otherwise the full 79-tool arsenal.
     let plan = mode == "plan";
+    let orchestrate = mode == "orchestrate";
     let mut registry = ToolRegistry::new();
-    let findings = FindingStore::new();
-    if !plan {
-        let names: &[&str] = if access == "readonly" { READONLY_TOOLS } else { ALL_TOOLS };
-        register_named(&mut registry, names, &findings);
-    }
+    let findings = if orchestrate {
+        let (reg, f) = build_engagement(adapter.clone(), model.clone(), 1200);
+        registry = reg;
+        f
+    } else {
+        let findings = FindingStore::new();
+        if !plan {
+            let names: &[&str] = if access == "readonly" { READONLY_TOOLS } else { ALL_TOOLS };
+            register_named(&mut registry, names, &findings);
+        }
+        findings
+    };
     let _findings = findings;
     // Lock this conversation's session for the whole turn so the model sees prior
     // turns and a concurrent run/compact on the same conversation serializes
     // behind us instead of forking a blank session.
     let handle = session_handle(&sessions, &session_id);
     let mut session = handle.lock().await;
-    let system = if plan { PLAN_SYSTEM } else { SYSTEM };
+    let system: String = if plan {
+        PLAN_SYSTEM.to_string()
+    } else if orchestrate {
+        orchestrator_system()
+    } else {
+        SYSTEM.to_string()
+    };
     let mut config = AgentConfig::new(&provider, &model).with_system(system).with_max_tokens(1200);
     // The chosen workspace becomes the tools' working directory for this run.
     if let Some(ws) = workspace.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -296,7 +347,7 @@ async fn run_prompt(
     let sink = on_event.clone();
     let outcome = run_turn_observed(
         &mut session,
-        &adapter,
+        adapter.as_ref(),
         &registry,
         &config,
         message,
