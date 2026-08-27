@@ -8,15 +8,7 @@ export const [models, setModels] = createSignal<ModelInfo[]>([])
 export const [modelsError, setModelsError] = createSignal<string | undefined>()
 export const [loadingModels, setLoadingModels] = createSignal(false)
 export const [selectedModel, setSelectedModel] = createSignal<string>('')
-export const [freeOnly, setFreeOnly] = createSignal(true)
-export const [toolsOnly, setToolsOnly] = createSignal(true)
 export const [search, setSearch] = createSignal('')
-
-/** Model id prefixes known to be gated to registered OpenRouter apps (they
- * reject a generic client with an AUTH error), so they are poor defaults. */
-function isGated(id: string): boolean {
-  return id.startsWith('thinkingmachines/')
-}
 
 export async function loadModels(): Promise<void> {
   setLoadingModels(true)
@@ -26,11 +18,8 @@ export async function loadModels(): Promise<void> {
     list.sort((a, b) => b.context_length - a.context_length)
     setModels(list)
     if (!selectedModel()) {
-      // Prefer a free tool-capable model, skipping ones known to be gated to
-      // registered OpenRouter apps (they reject with an AUTH error), so the
-      // default just works. `list` is already sorted by context desc.
-      const usable = list.filter((m) => m.is_free && m.supports_tools && !isGated(m.id))
-      const best = usable[0] ?? list.find((m) => m.is_free && m.supports_tools) ?? list[0]
+      // Default to the cheapest tool-capable DeepSeek model, else the first.
+      const best = list.find((m) => m.id === 'deepseek-v4-flash') ?? list.find((m) => m.supports_tools) ?? list[0]
       if (best) setSelectedModel(best.id)
     }
   } catch (e) {
@@ -40,15 +29,13 @@ export async function loadModels(): Promise<void> {
   }
 }
 
-/** The catalog after the active free/tools/search filters, context desc. */
+/** The catalog after the search filter, context desc. */
 export function visibleModels(): ModelInfo[] {
   const q = search().trim().toLowerCase()
-  return models().filter((m) => {
-    if (freeOnly() && !m.is_free) return false
-    if (toolsOnly() && !m.supports_tools) return false
-    if (q && !m.id.toLowerCase().includes(q) && !m.name.toLowerCase().includes(q)) return false
-    return true
-  })
+  if (!q) return models()
+  return models().filter(
+    (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
+  )
 }
 
 export function modelById(id: string): ModelInfo | undefined {
@@ -87,15 +74,6 @@ export function applyTheme(t: Theme): void {
   else root.setAttribute('data-theme', t)
 }
 
-const [autoFallback, setAutoFallbackSignal] = createSignal<boolean>(
-  readPref<string>('decibel.autoFallback', 'on') !== 'off',
-)
-export { autoFallback }
-export function setAutoFallback(on: boolean): void {
-  setAutoFallbackSignal(on)
-  writePref('decibel.autoFallback', on ? 'on' : 'off')
-}
-
 // ── conversation ─────────────────────────────────────────────────────────────
 export interface TextBlock {
   kind: 'text'
@@ -125,10 +103,6 @@ export interface Msg {
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
-// The model actually driving the in-flight run — set only when a fallback swaps
-// models mid-run, so the chip reflects reality during the run WITHOUT mutating
-// the user's persistent choice. Cleared when the run ends; the chip then reverts.
-export const [activeModel, setActiveModel] = createSignal<string | undefined>()
 let controller: AbortController | undefined
 // Each run gets a monotonic id; only the active run's events are applied, so a
 // cancelled or superseded run can never write into the transcript or clobber
@@ -153,19 +127,15 @@ export async function send(text: string): Promise<void> {
 
   const runId = nextRunId++
   activeRunId = runId
-  setActiveModel(undefined)
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, runId, autoFallback(), (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch
     // state if this run is still the active one (never clobber a newer run).
-    if (runId === activeRunId) {
-      setRunning(false)
-      setActiveModel(undefined)
-    }
+    if (runId === activeRunId) setRunning(false)
   }
 }
 
@@ -176,16 +146,11 @@ export function cancel(): void {
   controller?.abort()
   controller = undefined
   setRunning(false)
-  setActiveModel(undefined)
 }
 
 function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): void {
   // Ignore events from a run that was cancelled or superseded by a newer one.
   if (runId !== activeRunId) return
-  // Keep the composer's model chip honest DURING the run without changing the
-  // user's saved choice: the fallback becomes the effective model until the run
-  // ends. Done outside the store producer (a signal write, not a block edit).
-  if (e.type === 'model_fallback') setActiveModel(e.to)
   setConversation(
     'list',
     idx,
@@ -213,14 +178,6 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
           }
           break
         }
-        case 'model_fallback': {
-          // Record the switch inline. Keep any output already shown — a
-          // multi-step turn can complete a tool (e.g. an nmap card) before a
-          // later step's request fails — so appending, not wiping, avoids losing
-          // real results; the fallback model then continues below the notice.
-          blocks.push({ kind: 'notice', text: `switched to ${e.to} (${e.reason.toLowerCase()})` })
-          break
-        }
         case 'error':
           blocks.push({ kind: 'text', text: `\n\n⚠ ${e.message}` })
           break
@@ -230,8 +187,5 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
       }
     }),
   )
-  if (e.type === 'done' || e.type === 'error') {
-    setRunning(false)
-    setActiveModel(undefined)
-  }
+  if (e.type === 'done' || e.type === 'error') setRunning(false)
 }

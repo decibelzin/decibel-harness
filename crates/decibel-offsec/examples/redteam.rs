@@ -1,10 +1,10 @@
 //! The live red-team agent: the full offensive toolkit wired into the agent
 //! loop, driven by a free OpenRouter model.
 //!
-//! Needs an API key (OPENROUTER_API_KEY in a workspace-root .env or the shell):
+//! Needs an API key (DEEPSEEK_API_KEY in a workspace-root .env or the shell):
 //!
 //!     cargo run -p decibel-offsec --example redteam "recon localhost: what ports are open?"
-//!     cargo run -p decibel-offsec --example redteam "read ./Cargo.toml and summarize it" z-ai/glm-5.2:free
+//!     cargo run -p decibel-offsec --example redteam "read ./Cargo.toml and summarize it" deepseek-v4-pro
 //!
 //! Authorized use only: run it against systems you own or may test.
 
@@ -28,10 +28,10 @@ concise and act; do not ask for permission you already have.";
 async fn main() {
     let _ = dotenvy::dotenv();
 
-    let api_key = match std::env::var("OPENROUTER_API_KEY") {
+    let api_key = match std::env::var("DEEPSEEK_API_KEY") {
         Ok(k) if !k.trim().is_empty() => k,
         _ => {
-            eprintln!("Set OPENROUTER_API_KEY (free at https://openrouter.ai/keys), in a .env or the shell.");
+            eprintln!("Set DEEPSEEK_API_KEY (from https://platform.deepseek.com/api_keys), in a .env or the shell.");
             std::process::exit(1);
         }
     };
@@ -46,19 +46,18 @@ async fn main() {
     let candidates: Vec<String> = match std::env::args().nth(2) {
         Some(m) => vec![m],
         None => {
-            eprintln!("Fetching free tool-capable models…");
             let mut models: Vec<_> = fetch_default_models()
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| m.is_free && m.supports_tools)
+                .filter(|m| m.supports_tools)
                 .collect();
             models.sort_by(|a, b| b.context_length.cmp(&a.context_length));
             models.into_iter().map(|m| m.id).collect()
         }
     };
     if candidates.is_empty() {
-        eprintln!("No free tool-capable model available; pass a model id explicitly.");
+        eprintln!("No DeepSeek model available; pass a model id explicitly.");
         std::process::exit(1);
     }
 
@@ -70,7 +69,7 @@ async fn main() {
         let findings = register_all(&mut registry);
 
         let mut session = Session::new(format!("redteam-{i}"));
-        let config = AgentConfig::new("openrouter", model).with_system(SYSTEM).with_max_tokens(1200);
+        let config = AgentConfig::new("deepseek", model).with_system(SYSTEM).with_max_tokens(1200);
         let prompt = Message::human("u1", vec![ContentBlock::text(prompt_text.clone())]);
 
         // Live progress: tokens, tool calls, and results appear as they happen,
@@ -98,20 +97,19 @@ async fn main() {
         .await;
 
         if let StopReason::Error(failure) = &outcome.stop_reason {
-            // An account-wide daily cap is shared by every free model, so cycling
-            // is pointless — stop and show the actionable message.
-            let daily_capped = failure.message.contains("per-day")
-                || failure.message.contains("free-models-per-day");
-            if daily_capped {
+            // Out of credit affects every DeepSeek model, so cycling is pointless.
+            let out_of_credit = failure.status == Some(402)
+                || failure.code == "QUOTA_EXCEEDED"
+                || failure.message.contains("Insufficient Balance");
+            if out_of_credit {
                 eprintln!(
-                    "\n  Free daily quota exhausted for this key: {}\n  → wait for the daily reset, or add ~$10 of credit at https://openrouter.ai/credits\n    (that unlocks 1000 free-model requests/day; :free models still cost nothing per request).",
+                    "\n  DeepSeek: insufficient balance: {}\n  → add credit at https://platform.deepseek.com/top_up.",
                     failure.message
                 );
                 std::process::exit(1);
             }
-            let skippable = matches!(failure.status, Some(403) | Some(429))
-                || matches!(failure.code.as_str(), "RATE_LIMIT" | "TIMEOUT" | "PROVIDER_ERROR")
-                || failure.message.contains("agentic harnesses");
+            let skippable = matches!(failure.status, Some(429))
+                || matches!(failure.code.as_str(), "RATE_LIMIT" | "TIMEOUT" | "PROVIDER_ERROR");
             if skippable && i + 1 < candidates.len() {
                 eprintln!("  ([{}] — next model)\n", failure.code);
                 continue;
@@ -133,7 +131,7 @@ async fn main() {
         return;
     }
 
-    eprintln!("No free model completed the turn; pass a model id or try later.");
+    eprintln!("No DeepSeek model completed the turn; pass a model id or try later.");
     std::process::exit(1);
 }
 

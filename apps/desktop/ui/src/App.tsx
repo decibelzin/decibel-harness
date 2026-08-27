@@ -4,14 +4,11 @@ import './App.css'
 import { deleteApiKey, hasApiKey, isTauri, saveApiKey, type ModelInfo } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
 import {
-  activeModel,
   applyTheme,
-  autoFallback,
   cancel,
   conversation,
   settingsOpen,
   setSettingsOpen,
-  freeOnly,
   loadingModels,
   loadModels,
   modelById,
@@ -22,13 +19,9 @@ import {
   search,
   selectedModel,
   send,
-  setAutoFallback,
-  setFreeOnly,
   setSearch,
   setSelectedModel,
-  setToolsOnly,
   theme,
-  toolsOnly,
   visibleModels,
   type Block,
   type ToolBlock,
@@ -134,15 +127,6 @@ function Sidebar() {
   )
 }
 
-// ── reusable bits ─────────────────────────────────────────────────────────────
-function Toggle(props: { on: boolean; onChange: (v: boolean) => void; label?: string }) {
-  return (
-    <button class={`switch ${props.on ? 'on' : ''}`} role="switch" aria-checked={props.on} onClick={() => props.onChange(!props.on)}>
-      <span class="knob" />
-    </button>
-  )
-}
-
 // ── settings (tabbed page) ────────────────────────────────────────────────────
 type SettingsTab = 'models' | 'general' | 'appearance' | 'about'
 
@@ -181,10 +165,11 @@ function ApiKeyField() {
   }
   return (
     <div class="setting">
-      <div class="field-label">OpenRouter API key</div>
+      <div class="field-label">DeepSeek API key</div>
       <div class="field-help">
-        Stored in your OS keyring, never in a file. Get a free key at{' '}
-        <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">openrouter.ai/keys</a>.
+        Stored in your OS keyring, never in a file. Create a key at{' '}
+        <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">platform.deepseek.com/api_keys</a>{' '}
+        (add credit under Top Up).
       </div>
       <Show when={!isTauri()}>
         <div class="key-status" style={{ color: 'var(--warning)' }}>
@@ -231,11 +216,9 @@ function ModelsTab() {
       <ApiKeyField />
       <div class="setting">
         <div class="field-label">Default model</div>
-        <div class="field-help">The model new runs start with. Auto-fallback may switch it live if it's unavailable.</div>
+        <div class="field-help">The DeepSeek model new runs start with.</div>
         <div class="filters embedded">
           <input class="search" placeholder="search models…" value={search()} onInput={(e) => setSearch(e.currentTarget.value)} />
-          <label class="toggle"><input type="checkbox" checked={freeOnly()} onChange={(e) => setFreeOnly(e.currentTarget.checked)} />free</label>
-          <label class="toggle"><input type="checkbox" checked={toolsOnly()} onChange={(e) => setToolsOnly(e.currentTarget.checked)} />tools</label>
           <button class="refresh" onClick={() => loadModels()}>{loadingModels() ? '…' : '↻'}</button>
         </div>
         <div class="model-count">
@@ -264,12 +247,9 @@ function ModelsTab() {
 function GeneralTab() {
   return (
     <>
-      <div class="setting row">
-        <div>
-          <div class="field-label">Automatic model fallback</div>
-          <div class="field-help">When a model is gated, rate-limited, or overloaded, retry the next free tool-capable model automatically instead of failing the run.</div>
-        </div>
-        <Toggle on={autoFallback()} onChange={setAutoFallback} />
+      <div class="setting">
+        <div class="field-label">Provider</div>
+        <div class="field-help">Decibel runs on the DeepSeek API (paid). Pick a model in the composer's model chip or under Models &amp; Providers. Usage is billed to your DeepSeek account — add credit at platform.deepseek.com under Top Up.</div>
       </div>
       <div class="setting">
         <div class="field-label">Authority</div>
@@ -317,11 +297,11 @@ function AboutTab() {
       <p class="about-text">
         A lightweight desktop red-team / pentest agent. It drives a recon → analysis → exploitation →
         reporting loop over an offensive toolkit (shell, nmap, http, filesystem, search, findings),
-        powered by free OpenRouter models. No guardrails by design.
+        powered by the DeepSeek API. No guardrails by design.
       </p>
       <div class="about-links">
         <a href="https://github.com/decibelzin/decibel-harness" target="_blank" rel="noreferrer">Repository</a>
-        <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">Get an API key</a>
+        <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noreferrer">Get an API key</a>
       </div>
     </div>
   )
@@ -384,26 +364,12 @@ function ModelPanel(props: { onClose: () => void }) {
       <div class="model-panel">
         <div class="filters">
           <input class="search" placeholder="search models…" value={search()} onInput={(e) => setSearch(e.currentTarget.value)} />
-          <label class="toggle"><input type="checkbox" checked={freeOnly()} onChange={(e) => setFreeOnly(e.currentTarget.checked)} />free</label>
-          <label class="toggle"><input type="checkbox" checked={toolsOnly()} onChange={(e) => setToolsOnly(e.currentTarget.checked)} />tools</label>
           <button class="refresh" onClick={() => loadModels()}>{loadingModels() ? '…' : '↻'}</button>
         </div>
         <div class="model-count">
           <Show
             when={modelsError()}
-            fallback={
-              <>
-                Showing {visibleModels().length} of {models().length} models
-                <Show when={freeOnly() || toolsOnly()}>
-                  <span style={{ color: 'var(--text-faint)' }}>
-                    {' · uncheck '}
-                    {freeOnly() && toolsOnly() ? 'free / tools' : freeOnly() ? 'free' : 'tools'}
-                    {' for more'}
-                    {freeOnly() ? ' (paid models need credit)' : ''}
-                  </span>
-                </Show>
-              </>
-            }
+            fallback={<>Showing {visibleModels().length} of {models().length} models</>}
           >
             {(err) => <span style={{ color: 'var(--danger)' }}>catalog error: {err()}</span>}
           </Show>
@@ -430,9 +396,7 @@ function ModelPanel(props: { onClose: () => void }) {
 function Composer() {
   const [text, setText] = createSignal('')
   const [panel, setPanel] = createSignal(false)
-  // Show the effective model: the live fallback while a run is switching, else
-  // the user's saved selection.
-  const current = () => modelById(activeModel() ?? selectedModel())
+  const current = () => modelById(selectedModel())
   const submit = () => {
     if (running()) return cancel()
     const t = text()

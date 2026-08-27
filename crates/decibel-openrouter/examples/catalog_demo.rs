@@ -1,10 +1,9 @@
-//! Fetch the live OpenRouter model catalog and print the free, tool-capable
-//! models — exactly the data the desktop model picker will show.
+//! Print the DeepSeek model catalog — exactly the data the desktop model picker
+//! shows (a fixed list; no network call).
 //!
-//! No API key required (the /models endpoint is public):
 //!     cargo run -p decibel-openrouter --example catalog_demo
 //!
-//! Pass `all` to list every free model, including ones without tool calling:
+//! Pass `all` to list every model, including any without tool calling:
 //!     cargo run -p decibel-openrouter --example catalog_demo all
 
 use decibel_openrouter::fetch_default_models;
@@ -22,27 +21,25 @@ async fn main() {
     };
 
     let total = models.len();
-    let free: Vec<&_> = models.iter().filter(|m| m.is_free).collect();
-    let free_tools: Vec<&_> = free.iter().copied().filter(|m| m.supports_tools).collect();
+    let tool_capable: Vec<&_> = models.iter().filter(|m| m.supports_tools).collect();
 
     println!(
-        "OpenRouter catalog: {total} models total, {} free, {} free WITH tool calling.\n",
-        free.len(),
-        free_tools.len()
+        "DeepSeek catalog: {total} models, {} WITH tool calling.\n",
+        tool_capable.len()
     );
 
     // Sort by context size, largest first — the most useful agents up top.
     let mut listed: Vec<_> = if show_all {
-        free.clone()
+        models.iter().collect()
     } else {
-        free_tools.clone()
+        tool_capable.clone()
     };
     listed.sort_by(|a, b| b.context_length.cmp(&a.context_length));
 
     let heading = if show_all {
-        "All free models (tools = can act as an agent):"
+        "All DeepSeek models (tools = can act as an agent):"
     } else {
-        "Free models that can call tools (usable as a red-team agent):"
+        "DeepSeek models that can call tools (usable as a red-team agent):"
     };
     println!("{heading}");
     println!("{:<44} {:>9}  {:<5}  {}", "MODEL", "CONTEXT", "TOOLS", "INPUT");

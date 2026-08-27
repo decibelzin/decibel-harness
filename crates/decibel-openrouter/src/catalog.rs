@@ -1,13 +1,14 @@
-//! The live model catalog: `GET /api/v1/models`.
+//! The model catalog — the data behind the model picker.
 //!
-//! This is the data behind the model picker. The endpoint is public (no key),
-//! and every field the picker shows — context size, free/paid, and whether the
-//! model can call tools — is derived here so the UI renders a flat list.
+//! For DeepSeek this is the fixed [`deepseek_models`] list (its `/models`
+//! endpoint needs a key and carries no capability metadata). The generic
+//! [`fetch_models`]/[`parse_catalog`] helpers (an OpenAI/OpenRouter-style
+//! `data[]` of models with pricing + `supported_parameters`) are retained for
+//! any provider whose catalog does expose that metadata.
 
 use serde_json::Value;
 
 use crate::error::OpenRouterError;
-use crate::DEFAULT_BASE_URL;
 
 /// One model as the picker needs it: identity, context size, cost, and the two
 /// capabilities that decide whether it is usable as an agent.
@@ -135,10 +136,37 @@ pub async fn fetch_models(
     parse_catalog(&body)
 }
 
-/// Fetch the catalog from the default OpenRouter endpoint with a fresh client.
+/// The fixed DeepSeek model catalog. DeepSeek's `/models` endpoint needs the API
+/// key and carries no capability metadata (context, pricing, tool support), so
+/// the picker's fields are filled in here from the published model list. Every
+/// current DeepSeek V4 model is OpenAI-compatible, supports tool calls, and
+/// exposes a 1M-token context window. Prices are per-token, off-peak.
+pub fn deepseek_models() -> Vec<ModelInfo> {
+    let model = |id: &str, name: &str, prompt: &str, completion: &str, vision: bool| ModelInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        context_length: 1_000_000,
+        prompt_price: prompt.to_string(),
+        completion_price: completion.to_string(),
+        is_free: false,
+        supports_tools: true,
+        input_modalities: if vision {
+            vec!["text".to_string(), "image".to_string()]
+        } else {
+            vec!["text".to_string()]
+        },
+    };
+    vec![
+        model("deepseek-v4-flash", "DeepSeek V4 Flash", "0.00000022", "0.00000066", false),
+        model("deepseek-v4-pro", "DeepSeek V4 Pro", "0.00000066", "0.00000198", false),
+        model("deepseek-v4-flash-vision-exp", "DeepSeek V4 Flash Vision (exp)", "0.00000022", "0.00000066", true),
+    ]
+}
+
+/// The catalog the picker shows — the fixed [`deepseek_models`] list (no network
+/// call; DeepSeek's `/models` needs a key and lacks the metadata the picker needs).
 pub async fn fetch_default_models() -> Result<Vec<ModelInfo>, OpenRouterError> {
-    let client = reqwest::Client::new();
-    fetch_models(&client, DEFAULT_BASE_URL).await
+    Ok(deepseek_models())
 }
 
 #[cfg(test)]

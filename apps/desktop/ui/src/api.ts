@@ -1,6 +1,6 @@
 // Data layer. In the real Tauri app these call Rust commands; in dev / browser
-// preview they hit the proxied public OpenRouter catalog and mock the agent run,
-// so the whole UI is demonstrable without the backend or an API key.
+// preview the catalog is a fixed DeepSeek list and the agent run is mocked, so
+// the whole UI is demonstrable without the backend or an API key.
 
 import { Channel, invoke } from '@tauri-apps/api/core'
 
@@ -21,8 +21,6 @@ export type RunEvent =
   // `output` is the tool's rendered model-facing text; `value` is its canonical
   // JSON (present on success) — the source for structured cards (nmap, http, …).
   | { type: 'tool_result'; name: string; ok: boolean; output: string; value: unknown }
-  // The chosen model hit a skippable error and the run switched to `to`.
-  | { type: 'model_fallback'; to: string; reason: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
 
@@ -31,31 +29,23 @@ export function isTauri(): boolean {
   return typeof w.__TAURI_INTERNALS__ !== 'undefined' || typeof w.__TAURI__ !== 'undefined'
 }
 
-function parseModel(entry: any): ModelInfo {
-  const prompt = String(entry?.pricing?.prompt ?? '0')
-  const completion = String(entry?.pricing?.completion ?? '0')
-  const isFree = Number(prompt) === 0 && Number(completion) === 0
-  const params: string[] = entry?.supported_parameters ?? []
-  return {
-    id: entry.id,
-    name: entry.name ?? entry.id,
-    context_length: entry.context_length ?? entry?.top_provider?.context_length ?? 0,
-    is_free: isFree,
-    supports_tools: params.includes('tools') || params.includes('tool_choice'),
-    input_modalities: entry?.architecture?.input_modalities ?? ['text'],
-  }
-}
+/** The DeepSeek catalog for the browser preview (the desktop app gets the same
+ * list from the Rust `list_models` command). Kept in sync with the Rust
+ * `deepseek_models()`. All are OpenAI-compatible and support tool calls. */
+const DEEPSEEK_MODELS: ModelInfo[] = [
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text'] },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision (exp)', context_length: 1_000_000, is_free: false, supports_tools: true, input_modalities: ['text', 'image'] },
+]
 
-/** Fetch the live model catalog. */
+/** The model catalog. From the Rust backend in the app; the fixed list above in
+ * the browser preview. */
 export async function fetchModels(): Promise<ModelInfo[]> {
   if (isTauri()) return await invoke<ModelInfo[]>('list_models')
-  const res = await fetch('/or/api/v1/models')
-  if (!res.ok) throw new Error(`catalog HTTP ${res.status}`)
-  const json = await res.json()
-  return (json.data ?? []).map(parseModel)
+  return DEEPSEEK_MODELS
 }
 
-// ── API key (keyring in Tauri; no-op in browser preview) ─────────────────────
+// ── API key (DeepSeek key in the keyring in Tauri; no-op in browser preview) ──
 export async function hasApiKey(): Promise<boolean> {
   if (isTauri()) return await invoke<boolean>('has_api_key')
   return false
@@ -69,14 +59,11 @@ export async function deleteApiKey(): Promise<void> {
 
 /** Run one prompt, streaming events. Real in Tauri, mocked in browser preview.
  * `runId` tags this run so a Stop/New-session can cancel exactly it on the
- * backend and stale events can be filtered out on the frontend. When `fallback`
- * is set, the backend transparently retries other free models on skippable
- * errors (gated / rate-limited / overloaded). */
+ * backend and stale events can be filtered out on the frontend. */
 export async function runPrompt(
   prompt: string,
   model: string,
   runId: number,
-  fallback: boolean,
   onEvent: (e: RunEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -88,7 +75,7 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    await invoke('run_prompt', { prompt, model, runId, fallback, onEvent: channel })
+    await invoke('run_prompt', { prompt, model, runId, onEvent: channel })
     return
   }
   await mockRun(prompt, model, onEvent, signal)

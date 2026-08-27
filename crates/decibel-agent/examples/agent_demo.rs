@@ -1,7 +1,7 @@
 //! The first autonomous turn: a real model, a real shell tool, and the loop
 //! that lets the model *act* — run a command, read the result, then answer.
 //!
-//! Needs OPENROUTER_API_KEY (a workspace-root .env is auto-loaded):
+//! Needs DEEPSEEK_API_KEY (a workspace-root .env is auto-loaded):
 //!
 //!     cargo run -p decibel-agent --example agent_demo
 //!     cargo run -p decibel-agent --example agent_demo "what OS am I on and who am I?"
@@ -85,10 +85,10 @@ impl Tool for ShellTool {
 #[tokio::main]
 async fn main() {
     let _ = dotenvy::dotenv();
-    let api_key = match std::env::var("OPENROUTER_API_KEY") {
+    let api_key = match std::env::var("DEEPSEEK_API_KEY") {
         Ok(k) if !k.trim().is_empty() => k,
         _ => {
-            eprintln!("Set OPENROUTER_API_KEY (free at https://openrouter.ai/keys), e.g. in a .env file.");
+            eprintln!("Set DEEPSEEK_API_KEY (from https://platform.deepseek.com/api_keys), e.g. in a .env file.");
             std::process::exit(1);
         }
     };
@@ -101,17 +101,16 @@ async fn main() {
 
     let adapter = OpenRouterAdapter::new(Some(api_key));
 
-    // An explicit second arg pins the model; otherwise use the free +
-    // tool-capable catalog, largest context first.
+    // An explicit second arg pins the model; otherwise use the tool-capable
+    // DeepSeek catalog, largest context first.
     let candidates: Vec<String> = match std::env::args().nth(2) {
         Some(model) => vec![model],
         None => {
-            eprintln!("Fetching free tool-capable models…");
             let mut models: Vec<_> = fetch_default_models()
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| m.is_free && m.supports_tools)
+                .filter(|m| m.supports_tools)
                 .collect();
             models.sort_by(|a, b| b.context_length.cmp(&a.context_length));
             models.into_iter().map(|m| m.id).collect()
@@ -123,7 +122,7 @@ async fn main() {
     for (i, model) in candidates.iter().enumerate() {
         eprintln!("──────── trying model: {model} ────────");
         let mut session = Session::new(format!("agent-demo-{i}"));
-        let config = AgentConfig::new("openrouter", model)
+        let config = AgentConfig::new("deepseek", model)
             .with_system(
                 "You are Decibel, a concise offensive-security agent. You can run shell \
                  commands with the `shell` tool. Use it to gather facts before answering, \
@@ -138,12 +137,11 @@ async fn main() {
         let outcome =
             run_turn(&mut session, &adapter, &registry, &config, prompt, TurnSignal::new()).await;
 
-        // A gated or rate-limited free model can't serve this turn — the free
-        // tier shares a quota, so skip to the next candidate.
+        // A rate-limited or transiently-failing model can't serve this turn —
+        // skip to the next candidate.
         if let StopReason::Error(failure) = &outcome.stop_reason {
-            let skippable = matches!(failure.status, Some(403) | Some(429))
-                || matches!(failure.code.as_str(), "RATE_LIMIT" | "TIMEOUT" | "PROVIDER_ERROR")
-                || failure.message.contains("agentic harnesses");
+            let skippable = matches!(failure.status, Some(429))
+                || matches!(failure.code.as_str(), "RATE_LIMIT" | "TIMEOUT" | "PROVIDER_ERROR");
             if skippable && i + 1 < candidates.len() {
                 eprintln!("  ([{}] — next model)\n", failure.code);
                 continue;
@@ -158,7 +156,7 @@ async fn main() {
         return;
     }
 
-    eprintln!("No free tool-capable model completed the turn; pass a model id or try later.");
+    eprintln!("No DeepSeek model completed the turn; pass a model id or try later.");
     std::process::exit(1);
 }
 

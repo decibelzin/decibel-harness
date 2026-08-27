@@ -1,16 +1,15 @@
-//! Stream one real completion from a free OpenRouter model — the first time the
-//! harness talks to a model.
+//! Stream one real completion from a DeepSeek model — the first time the harness
+//! talks to a model.
 //!
-//! Needs an API key (free at https://openrouter.ai/keys). Put it in a
-//! workspace-root `.env` as `OPENROUTER_API_KEY=sk-or-...` (auto-loaded), or
-//! export it in the shell, then:
+//! Needs an API key (from https://platform.deepseek.com/api_keys). Put it in a
+//! workspace-root `.env` as `DEEPSEEK_API_KEY=sk-...` (auto-loaded), or export it
+//! in the shell, then:
 //!
 //!     cargo run -p decibel-openrouter --example chat_demo
-//!     cargo run -p decibel-openrouter --example chat_demo "what is sqlmap?" z-ai/glm-5.2:free
+//!     cargo run -p decibel-openrouter --example chat_demo "what is sqlmap?" deepseek-v4-pro
 //!
-//! With no explicit model, it tries the free tool-capable models in order of
-//! context size until one answers (some `:free` models are gated to approved
-//! apps and return 403 — those are skipped automatically).
+//! With no explicit model, it tries the DeepSeek models in order of context size
+//! until one answers.
 
 use std::io::Write;
 
@@ -23,11 +22,11 @@ async fn main() {
     // Load a workspace-root .env if present (dev convenience for the examples).
     let _ = dotenvy::dotenv();
 
-    let api_key = match std::env::var("OPENROUTER_API_KEY") {
+    let api_key = match std::env::var("DEEPSEEK_API_KEY") {
         Ok(key) if !key.trim().is_empty() => key,
         _ => {
-            eprintln!("Set OPENROUTER_API_KEY first (free at https://openrouter.ai/keys).");
-            eprintln!("  put it in a workspace-root .env, or:  $env:OPENROUTER_API_KEY = \"sk-or-...\"");
+            eprintln!("Set DEEPSEEK_API_KEY first (from https://platform.deepseek.com/api_keys).");
+            eprintln!("  put it in a workspace-root .env, or:  $env:DEEPSEEK_API_KEY = \"sk-...\"");
             std::process::exit(1);
         }
     };
@@ -42,12 +41,11 @@ async fn main() {
     let candidates: Vec<String> = match std::env::args().nth(2) {
         Some(m) => vec![m],
         None => {
-            eprintln!("Fetching free tool-capable models from the live catalog…");
             let mut models: Vec<_> = fetch_default_models()
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| m.is_free && m.supports_tools)
+                .filter(|m| m.supports_tools)
                 .collect();
             models.sort_by(|a, b| b.context_length.cmp(&a.context_length));
             models.into_iter().map(|m| m.id).collect()
@@ -55,7 +53,7 @@ async fn main() {
     };
 
     if candidates.is_empty() {
-        eprintln!("No free tool-capable model available right now; pass a model id explicitly.");
+        eprintln!("No DeepSeek model available right now; pass a model id explicitly.");
         std::process::exit(1);
     }
 
@@ -87,7 +85,7 @@ async fn stream_once(
     prompt: &str,
 ) -> Result<(), decibel_llm::LlmFailure> {
     let options = GenerateOptions {
-        provider: "openrouter".into(),
+        provider: "deepseek".into(),
         model: model.to_string(),
         messages: vec![Message::human("u1", vec![ContentBlock::text(prompt)])],
         system: Some("You are Decibel, a concise offensive-security assistant.".into()),
@@ -135,7 +133,7 @@ async fn stream_once(
     }
 
     if result.is_ok() {
-        let _ = assembler.into_message("a1", "openrouter", model);
+        let _ = assembler.into_message("a1", "deepseek", model);
         println!();
     }
     result
