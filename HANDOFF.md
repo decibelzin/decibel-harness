@@ -230,7 +230,10 @@ sidebar icons) built in phases:
 - [x] **Phase 1 — real workspace (DONE):** the workspace chip + sidebar pick a
   real directory; the shell/fs/search tools operate in it (`ExecCtx.cwd`/`resolve`,
   `AgentConfig.with_cwd`, `run_prompt(workspace)`, `path_is_dir` validator,
-  persisted in localStorage). The fake "fullbreachtoolkit" entry is gone.
+  persisted in localStorage). The fake "fullbreachtoolkit" entry is gone. Picker:
+  a **native OS folder dialog** (tauri-plugin-dialog + `dialog:default` capability;
+  `pickFolder()` calls `@tauri-apps/plugin-dialog` open({directory:true})) with a
+  paste-a-path fallback. Adding the plugin means the app must be REBUILT (relaunch).
 - [x] **Phase 2 — session persistence + real sidebar (DONE):** sessions are saved
   to `{app_data}/sessions/{id}.jsonl` (+ `.meta.json`) after each turn/compaction;
   the sidebar lists them (newest first) with open / inline-rename (double-click) /

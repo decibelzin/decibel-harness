@@ -1,7 +1,7 @@
 import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
-import { deleteApiKey, hasApiKey, isTauri, pathIsDir, saveApiKey, type ModelInfo, type SessionMeta } from './api'
+import { deleteApiKey, hasApiKey, isTauri, pathIsDir, pickFolder, saveApiKey, type ModelInfo, type SessionMeta } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
 import {
   access,
@@ -556,6 +556,13 @@ function WorkspacePanel() {
     setWorkspace(p)
     close()
   }
+  const browse = async () => {
+    const dir = await pickFolder()
+    if (dir) {
+      setWorkspace(dir)
+      close()
+    }
+  }
   return (
     <div class="modal-backdrop" onClick={close}>
       <div class="modal" onClick={(e) => e.stopPropagation()}>
@@ -565,6 +572,12 @@ function WorkspacePanel() {
             The folder the agent's shell / read / write / edit / glob / grep tools operate in — relative
             paths it uses resolve here. Leave empty to use the app's own directory.
           </div>
+          <Show when={isTauri()}>
+            <button class="btn primary ws-browse" onClick={browse}>
+              <span class="ico"><IconFolder /></span>Choose folder…
+            </button>
+          </Show>
+          <div class="ws-or">or paste a path</div>
           <div class="field-row">
             <input
               class="ws-input"
@@ -573,9 +586,9 @@ function WorkspacePanel() {
               onInput={(e) => setPath(e.currentTarget.value)}
               onKeyDown={(e) => e.key === 'Enter' && apply()}
             />
-            <button class="btn primary" disabled={busy()} onClick={apply}>{busy() ? '…' : 'Set'}</button>
+            <button class="btn" disabled={busy()} onClick={apply}>{busy() ? '…' : 'Set'}</button>
             <Show when={workspace()}>
-              <button class="btn" onClick={() => { setWorkspace(''); close() }}>Clear</button>
+              <button class="btn danger" onClick={() => { setWorkspace(''); close() }}>Clear</button>
             </Show>
           </div>
           <Show when={err()}>
@@ -590,7 +603,7 @@ function WorkspacePanel() {
           <Show when={!isTauri()}>
             <div class="key-status" style={{ color: 'var(--warning)' }}>
               <span class="kd" style={{ background: 'var(--warning)' }} />
-              Browser preview — the path isn't validated and tools don't run; only the desktop app executes.
+              Browser preview — the native picker only works in the desktop app.
             </div>
           </Show>
         </div>

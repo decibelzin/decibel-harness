@@ -731,6 +731,7 @@ fn rename_session(app: AppHandle, id: String, title: String) -> Result<(), Strin
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(RunRegistry::default());
             app.manage(Sessions::default());

@@ -112,6 +112,19 @@ export async function pathIsDir(path: string): Promise<boolean> {
   return path.trim().length > 0 // preview: accept any non-empty path
 }
 
+/** Open the native OS folder picker (desktop app only). Returns the chosen
+ * directory, or null if cancelled / not in the app. */
+export async function pickFolder(): Promise<string | null> {
+  if (!isTauri()) return null
+  try {
+    const { open } = await import('@tauri-apps/plugin-dialog')
+    const dir = await open({ directory: true, title: 'Choose workspace folder' })
+    return typeof dir === 'string' ? dir : null
+  } catch {
+    return null
+  }
+}
+
 // ── session / slash-command commands (Tauri; no-ops or estimates in preview) ──
 export interface ContextInfo {
   messages: number
