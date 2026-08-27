@@ -17,6 +17,7 @@ decibel-llm = { path = "../decibel-llm" }
 decibel-tools = { path = "../decibel-tools" }
 decibel-offsec = { path = "../decibel-offsec" }
 async-trait = "0.1"
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

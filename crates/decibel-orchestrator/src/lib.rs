@@ -21,6 +21,8 @@ use decibel_offsec::{register_named, FindingStore};
 use decibel_tools::{ExecCtx, Tool, ToolError, ToolRegistry};
 use serde_json::{json, Value};
 
+pub mod roster;
+
 /// One kill-chain specialist: a persona plus the exact tools it may use.
 #[derive(Clone)]
 pub struct Specialist {
@@ -34,63 +36,45 @@ pub struct Specialist {
     pub max_steps: u64,
 }
 
-impl Specialist {
-    fn new(name: &str, system: &str, tools: &[&str], max_steps: u64) -> Self {
-        Specialist {
-            name: name.to_string(),
-            system: system.to_string(),
-            tools: tools.iter().map(|s| s.to_string()).collect(),
-            max_steps,
-        }
-    }
-}
-
-/// The default recon / exploit / report specialists.
+/// The standard kill-chain specialist roster (the 17 upstream sub-agents),
+/// built from [`roster::specialists()`] in kill-chain order. Each specialist
+/// gets its real persona (compiled in) and its scoped `decibel-offsec` toolset.
+///
+/// The high-risk gates start read-only: `gated_tools(spec, false, false)` strips
+/// the active shell/exploit family from the `ics_operator` (`roe_gate`) and
+/// `wireless_operator` (`hw_gate`) until an operator authorizes them, so those
+/// specialists cannot run active ops out of the box.
 pub fn default_specialists() -> Vec<Specialist> {
-    vec![
-        Specialist::new(
-            "recon",
-            "You are the RECONNAISSANCE specialist on an authorized red-team engagement. Enumerate \
-the target: live hosts, open ports, running services and versions, web technologies, and likely \
-entry points. Use `nmap` for structured port/service data, `http` to probe web services, and \
-`shell`/`glob`/`grep`/`read_file` to inspect what you can reach. Record notable exposure with \
-`add_finding`. End with a concise summary of the attack surface and the most promising leads.",
-            &["shell", "nmap", "http", "glob", "grep", "read_file", "add_finding"],
-            10,
-        ),
-        Specialist::new(
-            "exploit",
-            "You are the EXPLOITATION specialist on an authorized red-team engagement. Given the \
-recon results in your task, attempt to exploit the identified weaknesses (web vulnerabilities, \
-exposed services, weak configs). Confirm each result with concrete evidence. Record every \
-confirmed issue with `add_finding`, including a MITRE ATT&CK technique id. Do not fabricate \
-success — report what actually worked and what did not.",
-            &["shell", "http", "read_file", "write_file", "str_replace", "add_finding"],
-            10,
-        ),
-        Specialist::new(
-            "report",
-            "You are the REPORTING specialist on an authorized red-team engagement. Synthesize the \
-engagement's findings into a clear, prioritized report: summary, each finding with severity and \
-MITRE technique, and remediation recommendations. You may read files for context and write the \
-report to a file with `write_file`. Be accurate and concise.",
-            &["read_file", "glob", "grep", "write_file", "add_finding"],
-            6,
-        ),
-    ]
+    roster::specialists()
+        .into_iter()
+        .map(|spec| Specialist {
+            name: spec.name.to_string(),
+            system: roster::specialist_prompt(spec.name).unwrap_or("").to_string(),
+            tools: roster::gated_tools(spec, false, false).iter().map(|s| s.to_string()).collect(),
+            max_steps: 16,
+        })
+        .collect()
 }
 
-/// The orchestrator's system prompt.
+/// The orchestrator's system prompt. Lists the full kill-chain roster
+/// dynamically so it always matches [`default_specialists()`].
 pub fn orchestrator_system() -> String {
-    "You are the ORCHESTRATOR of an authorized red-team engagement, operating with the user's \
+    let roster = roster::specialists()
+        .iter()
+        .map(|s| format!("`{}` ({})", s.name, s.phase))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "You are the ORCHESTRATOR of an authorized red-team engagement, operating with the user's \
 permission on systems they own or may test. Break the objective into kill-chain phases and \
-delegate each to a specialist with the `delegate` tool. Available specialists: `recon` (enumerate \
-the target), `exploit` (attempt exploitation of what recon found), `report` (write up the \
-findings). Delegate recon FIRST, pass its concrete results into the exploit task, then delegate \
-report last. Give each delegation a specific, self-contained task string — the specialist does not \
-see this conversation. Keep your own messages brief; the specialists do the work. Finish with a \
-short engagement summary."
-        .to_string()
+delegate each to a specialist with the `delegate` tool. Available specialists, in kill-chain \
+order: {roster}. Delegate reconnaissance FIRST (`recon`/`osint_operator`), then pass its concrete \
+results into the exploitation and post-exploitation phases; cover detection with `blue_cell` and \
+reporting via specialists' `report_executive` / `record_finding`. Give each delegation a specific, \
+self-contained task string — the specialist does not see this conversation, but every specialist \
+records into the one shared engagement finding store. Keep your own messages brief; the specialists \
+do the work. Finish with a short engagement summary."
+    )
 }
 
 /// The model-facing `delegate` tool: run one specialist subagent turn.
@@ -287,10 +271,20 @@ mod tests {
     #[test]
     fn specialists_have_expected_toolsets() {
         let s = default_specialists();
-        assert_eq!(s.len(), 3);
-        assert!(s[0].tools.contains(&"nmap".to_string()));
-        assert!(s[1].tools.contains(&"write_file".to_string()));
-        assert!(s[2].name == "report");
+        // The full kill-chain roster (17 standard specialists), not the old trio.
+        assert_eq!(s.len(), 17);
+        // Kill-chain sorted → recon is first, scoped to its scanners.
+        assert_eq!(s[0].name, "recon");
+        assert!(s[0].tools.contains(&"port_scan".to_string()));
+        // Each specialist carries its real persona (compiled in), not an empty prompt.
+        assert!(s.iter().all(|sp| !sp.system.is_empty()), "every specialist has a persona");
+        // web_operator gets the native web/auth analyzers.
+        let web = s.iter().find(|sp| sp.name == "web_operator").expect("web_operator present");
+        assert!(web.tools.contains(&"jwt_parse".to_string()));
+        // ics_operator is RoE-gated → starts read-only, so NO active shell.
+        let ics = s.iter().find(|sp| sp.name == "ics_operator").expect("ics_operator present");
+        assert!(!ics.tools.contains(&"shell".to_string()), "ics_operator is gated read-only: {:?}", ics.tools);
+        assert!(ics.tools.contains(&"kg_query".to_string()));
     }
 
     #[test]
