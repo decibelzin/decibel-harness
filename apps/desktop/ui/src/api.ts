@@ -71,6 +71,7 @@ export async function runPrompt(
   prompt: string,
   model: string,
   provider: string,
+  sessionId: string,
   runId: number,
   onEvent: (e: RunEvent) => void,
   signal?: AbortSignal,
@@ -83,10 +84,36 @@ export async function runPrompt(
     signal?.addEventListener('abort', () => void invoke('cancel_run', { runId }).catch(() => {}), {
       once: true,
     })
-    await invoke('run_prompt', { prompt, model, provider, runId, onEvent: channel })
+    await invoke('run_prompt', { prompt, model, provider, sessionId, runId, onEvent: channel })
     return
   }
   await mockRun(prompt, model, onEvent, signal)
+}
+
+// ── session / slash-command commands (Tauri; no-ops or estimates in preview) ──
+export interface ContextInfo {
+  messages: number
+  estimated_tokens: number
+  last_input_tokens: number | null
+  last_output_tokens: number | null
+}
+
+/** Drop a conversation's backend session (multi-turn memory) — for /clear. */
+export async function clearSession(sessionId: string): Promise<void> {
+  if (isTauri()) await invoke('clear_session', { sessionId })
+}
+
+/** The conversation's context usage — for /context. Null in browser preview. */
+export async function sessionContext(sessionId: string): Promise<ContextInfo | null> {
+  if (isTauri()) return await invoke<ContextInfo>('session_context', { sessionId })
+  return null
+}
+
+/** Summarize + replace the conversation's history — for /compact. Returns the
+ * summary (empty if nothing to compact). Browser preview has no backend session. */
+export async function compactSession(sessionId: string, model: string, provider: string): Promise<string> {
+  if (isTauri()) return await invoke<string>('compact_session', { sessionId, model, provider })
+  return ''
 }
 
 /** A believable mock so the conversation UI is demonstrable without a key. It

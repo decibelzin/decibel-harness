@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 # A backend feature MUST be enabled or there is no credential store at runtime
 # (set_password fails). windows-native = Windows Credential Manager.
 keyring = { version = "3", features = ["windows-native"] }

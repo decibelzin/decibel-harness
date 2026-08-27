@@ -201,11 +201,49 @@
   padding: 14px 24px 20px;
 }
 .composer-card {
+  position: relative;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 16px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
   padding: 12px 14px 10px;
+}
+
+/* slash-command autocomplete menu (above the composer) */
+.slash-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  z-index: 30;
+  padding: 5px;
+}
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.slash-item.sel {
+  background: var(--accent-soft);
+}
+.slash-item .sc-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-hover);
+  min-width: 92px;
+}
+.slash-item .sc-desc {
+  font-size: 12.5px;
+  color: var(--text-muted);
 }
 .composer-card:focus-within {
   border-color: var(--border);
@@ -1403,4 +1441,40 @@
 }
 .about-links a:hover {
   text-decoration: underline;
+}
+
+/* ── system messages (slash-command output) ──────────────────────────────── */
+.msg.system {
+  display: flex;
+  justify-content: center;
+}
+.sys {
+  max-width: 92%;
+  width: 100%;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface);
+  padding: 10px 14px;
+  font-size: 12.8px;
+  color: var(--text-muted);
+}
+.sys .notice {
+  margin: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-muted);
+  justify-content: center;
+}
+.sys .md {
+  color: var(--text-muted);
+}
+.sys .md :first-child {
+  margin-top: 0;
+}
+.sys .notice + .md {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text);
 }

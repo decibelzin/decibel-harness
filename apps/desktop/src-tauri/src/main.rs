@@ -7,15 +7,15 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::Value;
 use tauri::ipc::Channel;
 use tauri::{Manager, State};
 
-use decibel_agent::{run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
-use decibel_core::Session;
+use decibel_agent::{run_turn, run_turn_observed, AgentConfig, Progress, StopReason, TurnSignal};
+use decibel_core::{EventKind, Session, SurfaceIntent};
 use decibel_llm::{ContentBlock, Message};
 use decibel_offsec::register_all;
 use decibel_openrouter::OpenRouterAdapter;
@@ -54,13 +54,44 @@ the nmap tool for structured scans, the http tool for web requests, and the file
 tools to inspect the target. Record confirmed weaknesses with add_finding (include a MITRE ATT&CK \
 technique id). Be concise and act; do not ask for permission you already have.";
 
+/// System prompt for a `/compact` summarization turn (no tools).
+const COMPACT_SYSTEM: &str = "You are compacting a red-team engagement transcript. Produce a dense, \
+factual summary that a fresh agent can continue from with no other context.";
+/// The user instruction that drives a `/compact` turn.
+const COMPACT_PROMPT: &str = "Summarize the engagement so far as a handoff: the target(s), what was \
+enumerated/attempted, confirmed findings (with severity and any MITRE ids), credentials or artifacts \
+obtained, and the concrete next steps. Preserve every fact needed to continue. Be concise; omit chatter.";
+
 static SESSION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Next unique message id (`u-1`, `u-2`, …), shared across turns and sessions.
+fn next_msg_id(prefix: &str) -> String {
+    format!("{prefix}-{}", SESSION_SEQ.fetch_add(1, Ordering::Relaxed))
+}
 
 /// Live cancellation tokens for in-flight runs, keyed by the frontend's run id.
 /// A run registers its token here so `cancel_run` can stop it; the browser's
 /// AbortSignal alone cannot reach the backend.
 #[derive(Default)]
 struct RunRegistry(Mutex<HashMap<u64, TurnSignal>>);
+
+/// The durable conversation sessions, keyed by the frontend's session id, so the
+/// model sees prior turns (multi-turn memory). Each session sits behind its own
+/// async mutex, held for a whole turn/compaction, so two operations on the same
+/// conversation serialize instead of forking a blank session and clobbering each
+/// other on write-back.
+#[derive(Default)]
+struct Sessions(Mutex<HashMap<String, Arc<tokio::sync::Mutex<Session>>>>);
+
+/// The lock handle for a conversation's session (created empty on first use).
+/// Cloned out under the (brief) map lock; the caller then awaits the session
+/// lock for the duration of its turn.
+fn session_handle(sessions: &Sessions, session_id: &str) -> Arc<tokio::sync::Mutex<Session>> {
+    let mut map = sessions.0.lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(session_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(Session::new(session_id.to_string()))))
+        .clone()
+}
 
 /// One model as the picker needs it (matches the frontend `ModelInfo`).
 #[derive(Serialize, Clone)]
@@ -178,9 +209,11 @@ async fn run_prompt(
     prompt: String,
     model: String,
     provider: String,
+    session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
     runs: State<'_, RunRegistry>,
+    sessions: State<'_, Sessions>,
 ) -> Result<(), String> {
     let key = match resolve_key(&provider) {
         Ok(k) => k,
@@ -202,10 +235,13 @@ async fn run_prompt(
 
     let mut registry = ToolRegistry::new();
     let _findings = register_all(&mut registry);
-    let n = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut session = Session::new(format!("ui-{n}"));
+    // Lock this conversation's session for the whole turn so the model sees prior
+    // turns and a concurrent run/compact on the same conversation serializes
+    // behind us instead of forking a blank session.
+    let handle = session_handle(&sessions, &session_id);
+    let mut session = handle.lock().await;
     let config = AgentConfig::new(&provider, &model).with_system(SYSTEM).with_max_tokens(1200);
-    let message = Message::human(format!("u-{n}"), vec![ContentBlock::text(prompt)]);
+    let message = Message::human(next_msg_id("u"), vec![ContentBlock::text(prompt)]);
 
     let sink = on_event.clone();
     let outcome = run_turn_observed(
@@ -235,6 +271,7 @@ async fn run_prompt(
     )
     .await;
 
+    drop(session); // release the conversation lock before the run bookkeeping
     if let Ok(mut map) = runs.0.lock() {
         map.remove(&run_id);
     }
@@ -268,10 +305,134 @@ async fn run_prompt(
     Ok(())
 }
 
+/// Drop a conversation's session (a new one starts on the next run). Called by
+/// `/clear` and New Session. An in-flight run/compact holds its own `Arc` clone,
+/// so it finishes on the now-orphaned session while the next run starts fresh.
+#[tauri::command]
+fn clear_session(session_id: String, sessions: State<'_, Sessions>) {
+    if let Ok(mut map) = sessions.0.lock() {
+        map.remove(&session_id);
+    }
+}
+
+/// Context usage for `/context`: how much of the model's window the conversation
+/// is using. `last_input_tokens` is the provider-reported prompt size of the most
+/// recent turn (the real context the model saw); `estimated_tokens` is a rough
+/// forward estimate of the current derived history (~4 chars/token).
+#[derive(Serialize, Clone)]
+struct ContextInfo {
+    messages: u64,
+    estimated_tokens: u64,
+    last_input_tokens: Option<u64>,
+    last_output_tokens: Option<u64>,
+}
+
+/// Report the current conversation's context usage.
+#[tauri::command]
+fn session_context(session_id: String, sessions: State<'_, Sessions>) -> ContextInfo {
+    let empty = ContextInfo { messages: 0, estimated_tokens: 0, last_input_tokens: None, last_output_tokens: None };
+    let handle = match sessions.0.lock() {
+        Ok(map) => map.get(&session_id).cloned(),
+        Err(_) => None,
+    };
+    let Some(handle) = handle else { return empty };
+    // Non-blocking: if a run/compact holds the session, report empty rather than
+    // stall the UI (a /context call while idle always gets the lock).
+    let Ok(session) = handle.try_lock() else { return empty };
+
+    let messages = session.derive_messages();
+    let chars: usize = messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .map(|b| match b {
+            ContentBlock::Text { text } => text.len(),
+            ContentBlock::Reasoning { text } => text.len(),
+            ContentBlock::ToolCall { arguments, .. } => arguments.len(),
+            ContentBlock::ToolResult { content, .. } => {
+                content.iter().filter_map(ContentBlock::as_text).map(str::len).sum()
+            }
+        })
+        .sum();
+
+    // The most recent turn's provider-reported usage, if any.
+    let last_usage = session
+        .events()
+        .iter()
+        .rev()
+        .find_map(|e| match &e.kind {
+            EventKind::AssistantMessage { usage, .. } => usage.as_ref(),
+            _ => None,
+        });
+
+    ContextInfo {
+        messages: messages.len() as u64,
+        estimated_tokens: (chars / 4) as u64,
+        last_input_tokens: last_usage.map(|u| u.input_tokens),
+        last_output_tokens: last_usage.map(|u| u.output_tokens),
+    }
+}
+
+/// Compact a conversation: summarize the history (a toolless model turn) and
+/// replace the session with a fresh one seeded with just that summary. Returns
+/// the summary text for the UI to show. A no-op (empty string) if the
+/// conversation is empty. The summarization runs on a CLONE, and the real
+/// session is replaced only on success, so a failed compaction never corrupts or
+/// drops the conversation.
+#[tauri::command]
+async fn compact_session(
+    session_id: String,
+    model: String,
+    provider: String,
+    sessions: State<'_, Sessions>,
+) -> Result<String, String> {
+    let key = resolve_key(&provider)?;
+    let (_, _, base_url) = provider_config(&provider);
+    let adapter = OpenRouterAdapter::new(Some(key)).with_base_url(base_url);
+
+    // Lock the conversation for the whole compaction (serializes with any run).
+    let handle = session_handle(&sessions, &session_id);
+    let mut guard = handle.lock().await;
+    if guard.derive_messages().is_empty() {
+        return Ok(String::new());
+    }
+
+    // Summarize on a clone so the original is untouched if the turn fails.
+    let mut work = guard.clone();
+    let registry = ToolRegistry::new();
+    let config = AgentConfig::new(&provider, &model).with_system(COMPACT_SYSTEM).with_max_tokens(1200);
+    let prompt = Message::human(next_msg_id("compact"), vec![ContentBlock::text(COMPACT_PROMPT)]);
+    let outcome = run_turn(&mut work, &adapter, &registry, &config, prompt, TurnSignal::new()).await;
+
+    if let StopReason::Error(failure) = &outcome.stop_reason {
+        return Err(format!("[{}] {}", failure.code, failure.message)); // original guard untouched
+    }
+    let summary = outcome.final_text.trim().to_string();
+    if summary.is_empty() {
+        return Err("compaction produced no summary".into());
+    }
+
+    // Replace the history with a fresh session seeded with the summary as an
+    // assistant-role message, so the next user prompt still alternates cleanly.
+    let mut fresh = Session::new(session_id.clone());
+    let seed = Message::assistant(
+        next_msg_id("compact-ctx"),
+        vec![ContentBlock::text(format!("[Compacted summary of the engagement so far]\n{summary}"))],
+        &provider,
+        &model,
+    );
+    let _ = fresh.append_surface(
+        EventKind::AssistantMessage { turn: 0, step: 0, message: seed, usage: None },
+        SurfaceIntent::append_bare(),
+    );
+    *guard = fresh;
+    Ok(summary)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
             app.manage(RunRegistry::default());
+            app.manage(Sessions::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -280,7 +441,10 @@ fn main() {
             save_api_key,
             delete_api_key,
             run_prompt,
-            cancel_run
+            cancel_run,
+            clear_session,
+            session_context,
+            compact_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running Decibel");

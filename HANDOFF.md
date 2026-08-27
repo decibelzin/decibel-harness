@@ -108,15 +108,19 @@ crates/
   decibel-orchestrator  multi-agent: SubagentTool delegates to recon/exploit/report specialists
 apps/desktop/
   src-tauri/src/main.rs   Tauri v2. provider_config(provider)→(keyring account, env,
-                    base URL). Commands: list_models (fetch_full_catalog), run_prompt
-                    (takes `provider`; routes base URL + key; streams RunEvt over a
-                    Channel), has/save/delete_api_key(provider), cancel_run.
+                    base URL). Sessions state = Session per conversation (multi-turn).
+                    Commands: list_models (fetch_full_catalog), run_prompt (provider +
+                    session_id; reuses the session; streams RunEvt), cancel_run,
+                    has/save/delete_api_key(provider), clear_session, session_context,
+                    compact_session.
   ui/src/           SolidJS + Vite:
-    api.ts          invoke + Channel + browser mock; RunEvent union
-    store.ts        conversation, models, prefs (theme/autoFallback in localStorage),
-                    activeModel (effective model during a fallback), run-generation guard
+    api.ts          invoke + Channel + browser mock; RunEvent union; per-provider key
+                    fns; clearSession/sessionContext/compactSession
+    store.ts        conversation, models, theme pref, run-generation guard, sessionId
+                    (multi-turn), slash COMMANDS + runSlashCommand (/compact,/context,…)
     markdown.ts     marked + DOMPurify + highlight.js (curated langs), theme-var token colors
-    App.tsx         sidebar, hero+composer, model picker, tabbed Settings, tool cards, Markdown
+    App.tsx         sidebar, hero+composer (with slash-command menu), model picker,
+                    tabbed Settings, tool cards, Markdown, system-role messages
     App.css/theme.css  dark + light + system themes; tool-card + markdown + settings styles
 ```
 
@@ -158,6 +162,27 @@ the same fact the model saw (canonical value + pure render, per dsh).
       `fetch_full_catalog()` returns 18 (3 paid DeepSeek + 15 free OpenRouter);
       preview + both key fields OK; 61 tests + all builds green. **Not yet run
       live** against either provider here (needs the user's keys/credit).
+- [x] **Multi-turn memory + slash commands** (2026-08-27) — the backend now keeps a
+      `Session` per conversation (`Sessions` state, keyed by a frontend `session_id`)
+      so the model sees prior turns; `run_prompt(…, session_id, …)` takes/puts the
+      session back around the turn (`take_session`/`put_session`). New commands:
+      `clear_session`, `session_context` (messages + estimated tokens + last turn's
+      provider-reported usage), `compact_session` (a toolless summarization turn →
+      reseed the session with just the summary as injected context). Frontend: a
+      slash-command autocomplete menu (`/clear /new /compact /context /model
+      /settings /help`) with keyboard nav, `system`-role messages for output, a
+      `sessionId` rotated on New Session. Verified in preview: menu + filtering +
+      `/help` `/context`(estimated) `/model` `/clear`. `/compact` and real-token
+      `/context` need the live app + a key (not run live here).
+      **Adversarial review (4th) found 9 real bugs; 8 fixed:** per-session async
+      lock (`Arc<tokio::Mutex<Session>>`) so concurrent runs/compact can't fork a
+      blank session or clobber history on write-back (was reachable via
+      Stop-then-resend); compact summarizes on a clone + replaces only on success
+      (never corrupts on error); compact seeds the summary as an ASSISTANT message
+      (clean alternation); a run-generation guard so a late `/compact` can't clobber;
+      `/` submit only runs an EXACT `/name` (bare `/`+Enter and `/new prose` no
+      longer wipe/misfire; Tab completes, not executes); the composer draft lives in
+      the store (survives the hero↔docked remount) and the textarea autofocuses.
 
 **Verified:** 61 core tests green; Tauri crate + UI build; the live
 `fetch_full_catalog()` (what the app's `list_models` calls) returns 18 models
@@ -187,10 +212,12 @@ and shows both key fields. Not yet run live against either provider (needs keys)
   nested specialist activity.
 
 **E. Agent robustness**
-- **Context compaction** — summarize/prune so long pentest sessions don't blow the
-  model context (dsh has compaction-basic + tool-result pruner). Token growth is unbounded.
-- **Slash commands** — /new, /clear, /model, /compact, etc.
-- **Turn/step budget** UI, token/usage meter (usage is logged in core).
+- [x] **Multi-turn memory** — done (backend keeps a Session per conversation).
+- [x] **Slash commands** — done (/clear /new /compact /context /model /settings /help).
+- [x] **Context compaction** — a first `/compact` exists (summarize → reseed). Could
+  add automatic compaction at a token threshold + a tool-result pruner (dsh-style).
+- **Turn/step budget** UI, token/usage meter — `/context` shows usage on demand;
+  a persistent meter in the composer is still TODO. AgentConfig.max_steps is fixed at 16.
 
 **F. Larger parity (later)** — real workspaces (cwd per session honored by the
 shell/fs tools; the sidebar chip is decorative today), plan/act mode + permission
@@ -204,6 +231,12 @@ MCP client, Code Mode (run_code + SDK), image attachments, message feedback.
 - Deeper mid-step cancel (aborting the in-flight step's own request instantly) is
   not implemented — the DeepSeek adapter's `stream()` takes no cancel token; cancel
   drops the current stream and the between-steps check stops the next one. Good enough.
+- **(review finding #5, not fixed — low)** `run_turn` appends the user prompt to
+  the surface before the first model call, so a first-step terminal error leaves
+  the history ending on a user message; the next turn then sends two consecutive
+  user messages. Harmless on DeepSeek/OpenRouter (OpenAI-compatible, accept
+  consecutive same-role); would matter for a strict-alternation provider. A safe
+  fix (roll back the prompt on first-step error) is a core-loop change deferred.
 - The adapter crate is still named `decibel-openrouter` though it targets DeepSeek
   (internal label only; rename to `decibel-deepseek` if the pivot sticks).
 - `deepseek-v4-flash-vision-exp` accepts images, but the UI has no attachment path

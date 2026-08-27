@@ -6,8 +6,15 @@ import { highlightWithin, renderMarkdown } from './markdown'
 import {
   applyTheme,
   cancel,
+  COMMANDS,
+  composerDraft,
   conversation,
+  isCommand,
+  modelPickerOpen,
+  runSlashCommand,
+  setComposerDraft,
   settingsOpen,
+  setModelPickerOpen,
   setSettingsOpen,
   loadingModels,
   loadModels,
@@ -24,6 +31,7 @@ import {
   theme,
   visibleModels,
   type Block,
+  type SlashCommand,
   type ToolBlock,
 } from './store'
 
@@ -424,31 +432,110 @@ function ModelPanel(props: { onClose: () => void }) {
 
 // ── composer (used centered in the hero and docked in a chat) ─────────────────
 function Composer() {
-  const [text, setText] = createSignal('')
-  const [panel, setPanel] = createSignal(false)
+  // Draft lives in the store so it survives the hero↔docked remount.
+  const draft = composerDraft
+  const setDraft = setComposerDraft
+  const [sel, setSel] = createSignal(0)
   const current = () => modelById(selectedModel())
+  let taEl: HTMLTextAreaElement | undefined
+  onMount(() => taEl?.focus())
+
+  // Slash-command autocomplete: active while typing "/word" (no space yet).
+  const slashQuery = (): string | null => {
+    const t = draft()
+    if (!t.startsWith('/')) return null
+    const rest = t.slice(1)
+    if (/\s/.test(rest)) return null
+    return rest
+  }
+  const slashMatches = (): SlashCommand[] => {
+    const q = slashQuery()
+    if (q === null) return []
+    const lq = q.toLowerCase()
+    return COMMANDS.filter((c) => c.name.startsWith(lq))
+  }
+  const menuOpen = () => slashMatches().length > 0
+
+  const exec = (name: string) => {
+    setDraft('')
+    setSel(0)
+    void runSlashCommand(name)
+  }
   const submit = () => {
     if (running()) return cancel()
-    const t = text()
-    setText('')
+    const t = draft().trim()
+    if (t === '/') return // bare slash: keep the menu open, don't act
+    if (isCommand(t)) return exec(t.slice(1)) // exact "/name" only
+    // A typed prefix with the menu open runs the highlighted match (autocomplete).
+    if (slashQuery() && slashMatches().length) {
+      return exec(slashMatches()[Math.min(sel(), slashMatches().length - 1)].name)
+    }
+    setDraft('')
     void send(t)
   }
   return (
     <div class="composer-card">
+      <Show when={menuOpen()}>
+        <div class="slash-menu">
+          <For each={slashMatches()}>
+            {(c, i) => (
+              <div
+                class={`slash-item ${i() === sel() ? 'sel' : ''}`}
+                onMouseEnter={() => setSel(i())}
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  exec(c.name)
+                }}
+              >
+                <span class="sc-name">/{c.name}</span>
+                <span class="sc-desc">{c.desc}</span>
+              </div>
+            )}
+          </For>
+        </div>
+      </Show>
       <div class="chips-top">
         <button class="chip"><span class="ico"><IconFolder /></span>workspace<span class="caret">▾</span></button>
         <button class="chip"><span class="ico"><IconMode /></span>Standard mode<span class="caret">▾</span></button>
       </div>
       <textarea
+        ref={taEl}
         rows={1}
-        placeholder="Describe the engagement — e.g. recon 127.0.0.1 and report findings"
-        value={text()}
+        placeholder="Describe the engagement — or type / for commands"
+        value={draft()}
         onInput={(e) => {
-          setText(e.currentTarget.value)
+          setDraft(e.currentTarget.value)
+          setSel(0)
           e.currentTarget.style.height = 'auto'
           e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 220)}px`
         }}
         onKeyDown={(e) => {
+          if (menuOpen()) {
+            const items = slashMatches()
+            if (e.key === 'ArrowDown') {
+              e.preventDefault()
+              setSel((sel() + 1) % items.length)
+              return
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault()
+              setSel((sel() - 1 + items.length) % items.length)
+              return
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault()
+              setDraft('')
+              return
+            }
+            if (e.key === 'Tab') {
+              // Tab COMPLETES the highlighted command (does not execute), so a
+              // destructive command never fires from a stray Tab.
+              e.preventDefault()
+              const m = items[Math.min(sel(), items.length - 1)]
+              if (m) setDraft(`/${m.name}`)
+              return
+            }
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
             submit()
@@ -460,7 +547,7 @@ function Composer() {
         <button class="chip">Full access<span class="caret">▾</span></button>
         <span class="spacer" />
         <div class="model-anchor">
-          <button class="model-chip" onClick={() => setPanel(!panel())}>
+          <button class="model-chip" onClick={() => setModelPickerOpen(!modelPickerOpen())}>
             <Show when={current()} fallback={<span>select model</span>}>
               {(m) => (
                 <>
@@ -471,11 +558,11 @@ function Composer() {
             </Show>
             <span class="caret">▾</span>
           </button>
-          <Show when={panel()}><ModelPanel onClose={() => setPanel(false)} /></Show>
+          <Show when={modelPickerOpen()}><ModelPanel onClose={() => setModelPickerOpen(false)} /></Show>
         </div>
         <button
           class={`send ${running() ? 'stop' : ''}`}
-          disabled={!running() && (!text().trim() || !selectedModel())}
+          disabled={!running() && (!draft().trim() || !selectedModel())}
           onClick={submit}
           title={running() ? 'Stop' : 'Run'}
         >
@@ -789,15 +876,21 @@ function Conversation() {
             queueMicrotask(scrollDown)
             return (
               <div class={`msg ${msg.role}`}>
-                <Show when={msg.role === 'user'} fallback={<div class="role">assistant</div>}>
-                  <div class="bubble">{(msg.blocks[0] as any)?.text}</div>
-                </Show>
-                <Show when={msg.role === 'assistant'}>
-                  <div>
-                    <For each={msg.blocks}>{(b) => <BlockView block={b} />}</For>
-                    <Show when={running() && msg === conversation.list[conversation.list.length - 1]}><span class="cursor" /></Show>
-                  </div>
-                </Show>
+                <Switch>
+                  <Match when={msg.role === 'user'}>
+                    <div class="bubble">{(msg.blocks[0] as any)?.text}</div>
+                  </Match>
+                  <Match when={msg.role === 'assistant'}>
+                    <div class="role">assistant</div>
+                    <div>
+                      <For each={msg.blocks}>{(b) => <BlockView block={b} />}</For>
+                      <Show when={running() && msg === conversation.list[conversation.list.length - 1]}><span class="cursor" /></Show>
+                    </div>
+                  </Match>
+                  <Match when={msg.role === 'system'}>
+                    <div class="sys"><For each={msg.blocks}>{(b) => <BlockView block={b} />}</For></div>
+                  </Match>
+                </Switch>
               </div>
             )
           }}

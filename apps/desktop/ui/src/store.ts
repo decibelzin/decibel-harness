@@ -1,7 +1,7 @@
 import { createSignal } from 'solid-js'
 import { createStore, produce } from 'solid-js/store'
 
-import { fetchModels, runPrompt, type ModelInfo } from './api'
+import { clearSession, compactSession, fetchModels, runPrompt, sessionContext, type ModelInfo } from './api'
 
 // ── model catalog ───────────────────────────────────────────────────────────
 export const [models, setModels] = createSignal<ModelInfo[]>([])
@@ -96,22 +96,38 @@ export interface NoticeBlock {
 }
 export type Block = TextBlock | ToolBlock | NoticeBlock
 export interface Msg {
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
   blocks: Block[]
 }
 
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
+// Drives the composer's model picker so /model can open it from anywhere.
+export const [modelPickerOpen, setModelPickerOpen] = createSignal(false)
+// The composer draft lives in the store so it survives the hero↔docked Composer
+// remount at the empty/non-empty boundary (otherwise a typed draft is lost).
+export const [composerDraft, setComposerDraft] = createSignal('')
 let controller: AbortController | undefined
 // Each run gets a monotonic id; only the active run's events are applied, so a
 // cancelled or superseded run can never write into the transcript or clobber
 // running-state (its backend is also cancelled via the AbortSignal → cancel_run).
 let nextRunId = 1
 let activeRunId = 0
+// Conversation identity for the backend's multi-turn memory. A new one starts a
+// fresh backend session; /clear (newSession) rotates it and drops the old one.
+let sessionCounter = 0
+let sessionId = `sess-${++sessionCounter}`
+
+/** Append a standalone system message (slash-command output). */
+function pushSystem(blocks: Block[]): void {
+  setConversation('list', (l) => [...l, { role: 'system', blocks }])
+}
 
 export function newSession(): void {
   cancel()
+  void clearSession(sessionId).catch(() => {})
+  sessionId = `sess-${++sessionCounter}`
   setConversation('list', [])
 }
 
@@ -132,7 +148,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch
@@ -190,4 +206,118 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
     }),
   )
   if (e.type === 'done' || e.type === 'error') setRunning(false)
+}
+
+// ── slash commands ────────────────────────────────────────────────────────────
+export interface SlashCommand {
+  name: string
+  desc: string
+}
+export const COMMANDS: SlashCommand[] = [
+  { name: 'clear', desc: 'Clear the conversation and start fresh' },
+  { name: 'new', desc: 'Start a new session (alias of /clear)' },
+  { name: 'compact', desc: 'Summarize the conversation to free up context' },
+  { name: 'context', desc: 'Show token / context usage' },
+  { name: 'model', desc: 'Open the model picker' },
+  { name: 'settings', desc: 'Open settings' },
+  { name: 'help', desc: 'List the slash commands' },
+]
+
+/** Whether `text` is EXACTLY a slash command (no trailing args). Trailing prose
+ * (`/new the server`) is deliberately NOT a command — it sends as text — so a
+ * destructive command can't fire from ambiguous input. */
+export function isCommand(text: string): boolean {
+  const t = text.trim()
+  return COMMANDS.some((c) => t === `/${c.name}`)
+}
+
+/** Execute a slash command by name. */
+export async function runSlashCommand(name: string): Promise<void> {
+  switch (name) {
+    case 'clear':
+    case 'new':
+      newSession()
+      break
+    case 'model':
+      setModelPickerOpen(true)
+      break
+    case 'settings':
+      setSettingsOpen(true)
+      break
+    case 'help':
+      pushSystem([{ kind: 'text', text: helpText() }])
+      break
+    case 'context':
+      await runContext()
+      break
+    case 'compact':
+      await runCompact()
+      break
+  }
+}
+
+function helpText(): string {
+  return '**Slash commands**\n\n' + COMMANDS.map((c) => `- \`/${c.name}\` — ${c.desc}`).join('\n')
+}
+
+function fmtTok(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : String(n)
+}
+function contextLine(messages: number, est: number, lastInput: number | null, ctxLen?: number): string {
+  let s = `context · ${messages} message${messages === 1 ? '' : 's'} · ~${fmtTok(est)} tokens`
+  if (lastInput != null) s += ` · last turn ${fmtTok(lastInput)} in`
+  if (ctxLen) {
+    const used = lastInput ?? est
+    s += ` · ${Math.round((used / ctxLen) * 100)}% of ${fmtTok(ctxLen)}`
+  }
+  return s
+}
+
+async function runContext(): Promise<void> {
+  const ctxLen = modelById(selectedModel())?.context_length
+  const info = await sessionContext(sessionId).catch(() => null)
+  if (info) {
+    pushSystem([{ kind: 'notice', text: contextLine(info.messages, info.estimated_tokens, info.last_input_tokens, ctxLen) }])
+    return
+  }
+  // No backend (browser preview): estimate from the display conversation.
+  const chars = conversation.list
+    .flatMap((m) => m.blocks)
+    .reduce((n, b) => n + (b.kind === 'text' ? b.text.length : b.kind === 'tool' ? (b.output?.length ?? 0) + b.args.length : b.text.length), 0)
+  pushSystem([{ kind: 'notice', text: contextLine(conversation.list.length, Math.round(chars / 4), null, ctxLen) + ' (estimated)' }])
+}
+
+async function runCompact(): Promise<void> {
+  if (running()) return
+  const model = selectedModel()
+  if (!model) return
+  if (conversation.list.length === 0) {
+    pushSystem([{ kind: 'notice', text: 'nothing to compact yet' }])
+    return
+  }
+  const provider = modelById(model)?.provider ?? 'deepseek'
+  // Tag this like a run so Stop (cancel → activeRunId=0) or /clear (rotates
+  // sessionId) makes a late-resolving compaction bail instead of clobbering a
+  // newer transcript or a run started after Stop.
+  const runId = nextRunId++
+  activeRunId = runId
+  const sid = sessionId
+  setRunning(true)
+  try {
+    const summary = await compactSession(sid, model, provider)
+    if (runId !== activeRunId || sid !== sessionId) return // stopped or cleared
+    if (!summary) {
+      pushSystem([{ kind: 'notice', text: 'compaction needs the desktop app and an API key' }])
+      return
+    }
+    // Replace the transcript with a single compacted-summary message; the backend
+    // session now carries just this summary as context for the next turn.
+    setConversation('list', [
+      { role: 'system', blocks: [{ kind: 'notice', text: 'conversation compacted' }, { kind: 'text', text: summary }] },
+    ])
+  } catch (e) {
+    if (runId === activeRunId) pushSystem([{ kind: 'notice', text: `compact failed: ${e instanceof Error ? e.message : String(e)}` }])
+  } finally {
+    if (runId === activeRunId) setRunning(false)
+  }
 }
