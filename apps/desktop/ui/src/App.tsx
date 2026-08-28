@@ -60,6 +60,7 @@ import {
   type McpServer,
   type Mode,
   type SlashCommand,
+  type SpecialistRun,
   type ToolBlock,
 } from './store'
 
@@ -129,6 +130,7 @@ const IconShield = () => svg(<path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-
 const IconWrench = () => svg(<path d="M14 6a4 4 0 0 0-5 5L4 16l4 4 5-5a4 4 0 0 0 5-5l-3 3-2-2z" />, 15)
 const IconSwitch = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points="18 2 18 7 13 7" /><path d="M20 12a8 8 0 0 1-14 5" /><polyline points="6 22 6 17 11 17" /></>, 13)
 const IconFlag = () => svg(<><line x1="5" y1="21" x2="5" y2="3" /><path d="M5 4h12l-2.5 4L17 12H5" /></>, 16)
+const IconAgents = () => svg(<><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0" /><path d="M16 6a3 3 0 0 1 0 6" /><path d="M18.5 20a6 6 0 0 0-3-5.2" /></>, 15)
 
 // ── sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar() {
@@ -1034,6 +1036,7 @@ function toolMeta(name: string): ToolMeta {
     case 'glob': return { label: 'glob', icon: IconSearch }
     case 'grep': return { label: 'grep', icon: IconSearch }
     case 'add_finding': return { label: 'add_finding', icon: IconShield }
+    case 'delegate': return { label: 'delegate', icon: IconAgents }
     default: return { label: name, icon: IconWrench }
   }
 }
@@ -1052,6 +1055,11 @@ function argSummary(block: ToolBlock): string {
     case 'glob':
     case 'grep': return s(a.pattern)
     case 'add_finding': return s(a.title)
+    case 'delegate': {
+      const spec = s(a.specialist)
+      const task = s(a.task)
+      return spec && task ? `${spec} — ${task}` : spec || task
+    }
     default: {
       const first = Object.values(a).find((v) => typeof v === 'string')
       return s(first)
@@ -1253,6 +1261,39 @@ function ToolBody(props: { block: ToolBlock }) {
   )
 }
 
+/** The nested sub-agent timeline shown inside a `delegate` card: a specialist's
+ * live steps, tool cards, and narration, streamed as the delegation runs. */
+function SpecialistTimeline(props: { run: SpecialistRun }) {
+  const status = () =>
+    props.run.state === 'running' ? 'running' : props.run.stop || props.run.state
+  // The streamed tokens already carry the specialist's narration; show the
+  // end-summary only when nothing streamed (some models emit no text deltas).
+  const streamedText = () => props.run.blocks.some((b) => b.kind === 'text' && (b as any).text?.trim())
+  return (
+    <div class={`subagent ${props.run.state}`}>
+      <div class="sa-head">
+        <span class="sa-ico"><IconAgents /></span>
+        <span class="sa-name">{props.run.name}</span>
+        <Show when={props.run.task}><span class="sa-task">{props.run.task}</span></Show>
+        <span class={`state ${props.run.state}`}><span class="sd" />{status()}</span>
+      </div>
+      <div class="sa-body">
+        <For each={props.run.blocks}>{(b) => <BlockView block={b} />}</For>
+        <Show when={props.run.state === 'running'}><span class="cursor" /></Show>
+        <Show when={props.run.state !== 'running' && !streamedText() && props.run.summary?.trim()}>
+          <div class="sa-summary"><Markdown text={props.run.summary!} /></div>
+        </Show>
+      </div>
+      <Show when={props.run.state !== 'running'}>
+        <div class="sa-foot">
+          {props.run.steps ?? 0} step(s)
+          <Show when={props.run.findingsAdded}>{`, ${props.run.findingsAdded} finding(s) recorded`}</Show>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
 function ToolCardView(props: { block: ToolBlock }) {
   const [open, setOpen] = createSignal(true)
   const meta = () => toolMeta(props.block.name)
@@ -1267,7 +1308,13 @@ function ToolCardView(props: { block: ToolBlock }) {
         <span class="tc-caret">{open() ? '▾' : '▸'}</span>
       </button>
       <Show when={open()}>
-        <div class="tc-body"><ToolBody block={props.block} /></div>
+        <div class="tc-body">
+          {/* A delegation renders its specialist's nested timeline in place of the
+              opaque summary; every other tool renders its normal body. */}
+          <Show when={props.block.specialist} fallback={<ToolBody block={props.block} />}>
+            <SpecialistTimeline run={props.block.specialist!} />
+          </Show>
+        </div>
       </Show>
     </div>
   )

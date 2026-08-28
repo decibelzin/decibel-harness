@@ -17,11 +17,51 @@ use async_trait::async_trait;
 use decibel_agent::{run_turn_observed, AgentConfig, Progress, StopReason};
 use decibel_core::Session;
 use decibel_llm::{ContentBlock, LlmAdapter, Message, ToolSchema};
-use decibel_offsec::{register_named, FindingStore};
+use decibel_offsec::{register_named_with_db, Db, FindingStore};
 use decibel_tools::{ExecCtx, Tool, ToolError, ToolRegistry};
 use serde_json::{json, Value};
 
 pub mod roster;
+
+/// A live event from a specialist sub-run, forwarded to the app so orchestrate
+/// mode can render a nested sub-agent timeline instead of one opaque `delegate`
+/// card. `delegation` is the orchestrator's per-run delegation index (correlates
+/// a specialist lane to its `delegate` call); `specialist` is the roster name.
+#[derive(Clone, Debug)]
+pub enum SpecialistEvent {
+    /// The specialist turn is starting, with the task it was handed.
+    Start { delegation: u64, specialist: String, task: String },
+    /// A new model step began inside the specialist turn.
+    Step { delegation: u64, specialist: String, n: u64 },
+    /// A fragment of the specialist's streamed narration.
+    Token { delegation: u64, specialist: String, text: String },
+    /// The specialist invoked one of its tools.
+    ToolCall { delegation: u64, specialist: String, name: String, args: String },
+    /// One of the specialist's tools settled.
+    ToolResult {
+        delegation: u64,
+        specialist: String,
+        name: String,
+        ok: bool,
+        output: String,
+        value: Option<Value>,
+    },
+    /// The specialist turn finished.
+    End {
+        delegation: u64,
+        specialist: String,
+        ok: bool,
+        stop: String,
+        steps: u64,
+        findings_added: usize,
+        summary: String,
+    },
+}
+
+/// A sink the app installs to receive [`SpecialistEvent`]s. `Send + Sync` because
+/// it is captured in the specialist's progress observer, which runs inside the
+/// `delegate` tool's `async_trait` (Send) future.
+pub type SpecialistSink = Arc<dyn Fn(SpecialistEvent) + Send + Sync>;
 
 /// One kill-chain specialist: a persona plus the exact tools it may use.
 #[derive(Clone)]
@@ -82,27 +122,38 @@ pub struct SubagentTool {
     adapter: Arc<dyn LlmAdapter>,
     model: String,
     findings: FindingStore,
+    /// The shared, (persistent) knowledge-graph store every specialist records
+    /// into, so KG nodes/edges/findings accumulate across delegations.
+    store: Db,
     specialists: Vec<Specialist>,
     max_tokens: u64,
+    /// Optional sink for the specialist's live progress (a nested UI timeline);
+    /// `None` falls back to indented stderr for headless runs.
+    sink: Option<SpecialistSink>,
     counter: AtomicU64,
 }
 
 impl SubagentTool {
     /// Build the delegation tool over an adapter, the model every specialist
-    /// uses, the shared finding store, and the specialist roster.
+    /// uses, the shared finding store + KG, the specialist roster, and an optional
+    /// progress sink for a nested UI timeline.
     pub fn new(
         adapter: Arc<dyn LlmAdapter>,
         model: impl Into<String>,
         findings: FindingStore,
+        store: Db,
         specialists: Vec<Specialist>,
         max_tokens: u64,
+        sink: Option<SpecialistSink>,
     ) -> Self {
         SubagentTool {
             adapter,
             model: model.into(),
             findings,
+            store,
             specialists,
             max_tokens,
+            sink,
             counter: AtomicU64::new(0),
         }
     }
@@ -164,21 +215,35 @@ self-contained task — the specialist does not see this conversation.",
             .clone();
 
         // A fresh registry and session give the specialist an isolated context;
-        // the shared finding store threads findings back to the engagement.
+        // the shared finding store + persistent KG thread its work back to the
+        // engagement (so a later specialist traverses what an earlier one found).
         let mut registry = ToolRegistry::new();
-        register_named(&mut registry, &specialist.tools.iter().map(String::as_str).collect::<Vec<_>>(), &self.findings);
+        register_named_with_db(
+            &mut registry,
+            &specialist.tools.iter().map(String::as_str).collect::<Vec<_>>(),
+            &self.findings,
+            &self.store,
+        );
 
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let mut session = Session::new(format!("sub-{name}-{n}"));
         let mut config = AgentConfig::new("openrouter", &self.model).with_system(&specialist.system).with_max_tokens(self.max_tokens);
         config.max_steps = specialist.max_steps;
-        let prompt = Message::human(format!("task-{name}-{n}"), vec![ContentBlock::text(task)]);
+        let prompt = Message::human(format!("task-{name}-{n}"), vec![ContentBlock::text(task.clone())]);
 
-        let findings_before = self.findings.len();
-        // Print the specialist's activity indented, so the orchestrator run does
-        // not go silent during a long delegation. Cancellation propagates via
-        // the shared token.
+        // Count findings across BOTH sinks: `add_finding` writes the FindingStore,
+        // but the roster's specialists record via `record_finding`, which writes the
+        // persistent KG Db — so counting only the FindingStore would report 0.
+        let findings_count = || self.findings.len() + self.store.finding_count();
+        let findings_before = findings_count();
+        // Forward the specialist's activity to the UI sink as a nested timeline;
+        // with no sink, print it indented so a headless orchestrator run does not
+        // go silent. Cancellation propagates via the shared token.
         let label = name.clone();
+        let sink = self.sink.clone();
+        if let Some(sink) = &sink {
+            sink(SpecialistEvent::Start { delegation: n, specialist: label.clone(), task: task.clone() });
+        }
         let outcome = run_turn_observed(
             &mut session,
             self.adapter.as_ref(),
@@ -186,26 +251,57 @@ self-contained task — the specialist does not see this conversation.",
             &config,
             prompt,
             ctx.token().clone(),
-            &mut |event| match event {
-                Progress::Step(s) => eprintln!("      · {label} step {s}"),
-                Progress::Token(_) => {}
-                Progress::ToolCall { name, args } => {
-                    let preview: String = args.chars().take(120).collect();
-                    eprintln!("      · {label} → {name} {preview}");
-                }
-                Progress::ToolResult { name, is_error, .. } => {
-                    eprintln!("      · {label}   {} {name}", if is_error { "[error]" } else { "[ok]" });
-                }
+            &mut |event| match &sink {
+                Some(sink) => sink(match event {
+                    Progress::Step(s) => SpecialistEvent::Step { delegation: n, specialist: label.clone(), n: s },
+                    Progress::Token(t) => SpecialistEvent::Token { delegation: n, specialist: label.clone(), text: t.to_string() },
+                    Progress::ToolCall { name, args } => SpecialistEvent::ToolCall {
+                        delegation: n,
+                        specialist: label.clone(),
+                        name: name.to_string(),
+                        args: args.to_string(),
+                    },
+                    Progress::ToolResult { name, is_error, output, value } => SpecialistEvent::ToolResult {
+                        delegation: n,
+                        specialist: label.clone(),
+                        name: name.to_string(),
+                        ok: !is_error,
+                        output: output.to_string(),
+                        value: value.cloned(),
+                    },
+                }),
+                None => match event {
+                    Progress::Step(s) => eprintln!("      · {label} step {s}"),
+                    Progress::Token(_) => {}
+                    Progress::ToolCall { name, args } => {
+                        let preview: String = args.chars().take(120).collect();
+                        eprintln!("      · {label} → {name} {preview}");
+                    }
+                    Progress::ToolResult { name, is_error, .. } => {
+                        eprintln!("      · {label}   {} {name}", if is_error { "[error]" } else { "[ok]" });
+                    }
+                },
             },
         )
         .await;
 
-        let findings_added = self.findings.len().saturating_sub(findings_before);
+        let findings_added = findings_count().saturating_sub(findings_before);
         let stop = match &outcome.stop_reason {
             StopReason::Completed => "completed".to_string(),
             StopReason::MaxSteps => "max-steps".to_string(),
             StopReason::Error(f) => format!("error: [{}] {}", f.code, f.message),
         };
+        if let Some(sink) = &sink {
+            sink(SpecialistEvent::End {
+                delegation: n,
+                specialist: label.clone(),
+                ok: matches!(outcome.stop_reason, StopReason::Completed),
+                stop: stop.clone(),
+                steps: outcome.steps,
+                findings_added,
+                summary: outcome.final_text.clone(),
+            });
+        }
 
         Ok(json!({
             "specialist": name,
@@ -229,25 +325,31 @@ self-contained task — the specialist does not see this conversation.",
 }
 
 /// Build the orchestrator's registry: the `delegate` tool over the default
-/// specialists plus a shared `add_finding`, and return the engagement's finding
-/// store. Every specialist and the orchestrator record into the same store.
+/// specialists plus a shared `add_finding`. The caller supplies the engagement's
+/// `findings` store and persistent knowledge-graph `store` (both shared with every
+/// specialist and held across turns by the app), and an optional `sink` for a live
+/// nested specialist timeline.
 pub fn build_engagement(
     adapter: Arc<dyn LlmAdapter>,
     model: impl Into<String>,
     max_tokens: u64,
-) -> (ToolRegistry, FindingStore) {
-    let findings = FindingStore::new();
+    findings: FindingStore,
+    store: Db,
+    sink: Option<SpecialistSink>,
+) -> ToolRegistry {
     let specialists = default_specialists();
     let mut registry = ToolRegistry::new();
     registry.register(Arc::new(SubagentTool::new(
         adapter,
         model,
         findings.clone(),
+        store.handle(),
         specialists,
         max_tokens,
+        sink,
     )));
-    register_named(&mut registry, &["add_finding"], &findings);
-    (registry, findings)
+    register_named_with_db(&mut registry, &["add_finding"], &findings, &store);
+    registry
 }
 
 #[cfg(test)]
@@ -289,7 +391,14 @@ mod tests {
 
     #[test]
     fn build_engagement_exposes_delegate_tool() {
-        let (registry, _findings) = build_engagement(Arc::new(StubAdapter), "m", 500);
+        let registry = build_engagement(
+            Arc::new(StubAdapter),
+            "m",
+            500,
+            FindingStore::new(),
+            decibel_offsec::ephemeral_db(),
+            None,
+        );
         let names: Vec<String> = registry.schemas().into_iter().map(|s| s.name).collect();
         assert!(names.contains(&"delegate".to_string()));
         assert!(names.contains(&"add_finding".to_string()));
@@ -302,8 +411,10 @@ mod tests {
             Arc::new(StubAdapter),
             "m",
             findings.clone(),
+            decibel_offsec::ephemeral_db(),
             default_specialists(),
             500,
+            None,
         );
         let value = tool
             .execute(json!({ "specialist": "recon", "task": "scan it" }), &ExecCtx::new())
@@ -316,9 +427,41 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_specialist_is_rejected() {
-        let tool = SubagentTool::new(Arc::new(StubAdapter), "m", FindingStore::new(), default_specialists(), 500);
+        let tool = SubagentTool::new(
+            Arc::new(StubAdapter),
+            "m",
+            FindingStore::new(),
+            decibel_offsec::ephemeral_db(),
+            default_specialists(),
+            500,
+            None,
+        );
         let err = tool.execute(json!({ "specialist": "ghost", "task": "x" }), &ExecCtx::new()).await.unwrap_err();
         assert_eq!(err.code(), "INVALID_ARGS");
+    }
+
+    #[tokio::test]
+    async fn delegate_streams_specialist_events_to_the_sink() {
+        use std::sync::Mutex;
+        let events: Arc<Mutex<Vec<SpecialistEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let sink: SpecialistSink = Arc::new(move |ev| seen.lock().unwrap().push(ev));
+        let tool = SubagentTool::new(
+            Arc::new(StubAdapter),
+            "m",
+            FindingStore::new(),
+            decibel_offsec::ephemeral_db(),
+            default_specialists(),
+            500,
+            Some(sink),
+        );
+        tool.execute(json!({ "specialist": "recon", "task": "scan it" }), &ExecCtx::new())
+            .await
+            .unwrap();
+        let got = events.lock().unwrap();
+        // A nested run brackets its activity with Start … End, tagged by delegation.
+        assert!(matches!(got.first(), Some(SpecialistEvent::Start { delegation: 0, .. })));
+        assert!(matches!(got.last(), Some(SpecialistEvent::End { delegation: 0, ok: true, .. })));
     }
 }
 

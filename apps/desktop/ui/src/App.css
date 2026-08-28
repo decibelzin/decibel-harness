@@ -1088,6 +1088,71 @@
 .tc-foot {
   margin-top: 8px;
 }
+
+/* Nested specialist timeline (orchestrate mode), inside a `delegate` card. */
+.subagent {
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--surface-2);
+  padding: 8px 10px;
+}
+.subagent.running {
+  border-left-color: var(--warning);
+}
+.subagent.error {
+  border-left-color: var(--danger);
+}
+.sa-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+}
+.sa-ico {
+  display: flex;
+  color: var(--accent);
+}
+.sa-name {
+  font-weight: 600;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.sa-task {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+.sa-head .state {
+  margin-left: auto;
+  font-size: 10.5px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-faint);
+}
+.sa-body {
+  margin-top: 4px;
+}
+/* Nested tool cards read as one level deeper: tighter and quieter. */
+.sa-body .toolcard {
+  margin: 6px 0;
+  background: var(--surface);
+}
+.sa-summary {
+  margin-top: 4px;
+  font-size: 12.8px;
+  color: var(--text-muted);
+}
+.sa-foot {
+  margin-top: 6px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
 .chip-sm {
   font-family: var(--mono);
   font-size: 10.5px;

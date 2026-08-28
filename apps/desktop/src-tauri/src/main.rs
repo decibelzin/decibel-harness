@@ -20,9 +20,11 @@ use decibel_agent::{run_turn, run_turn_observed, AgentConfig, Progress, StopReas
 use decibel_core::{persist, EventKind, Session, SurfaceIntent};
 use decibel_llm::{ContentBlock, LlmAdapter, Message, MessageSource};
 use decibel_mcp::{register_mcp_server, McpClient, McpServerConfig};
-use decibel_offsec::{register_named, FindingStore, Scope, ScopePolicy, ShieldPolicy, ALL_TOOLS};
+use decibel_offsec::{
+    register_named_with_db, Db, FindingStore, Scope, ScopePolicy, ShieldPolicy, ALL_TOOLS,
+};
 use decibel_openrouter::OpenRouterAdapter;
-use decibel_orchestrator::{build_engagement, orchestrator_system};
+use decibel_orchestrator::{build_engagement, orchestrator_system, SpecialistEvent, SpecialistSink};
 use decibel_tools::ToolRegistry;
 
 /// Keyring service the provider keys are stored under (account = provider tag).
@@ -152,6 +154,61 @@ fn is_current_session(
         .unwrap_or(false)
 }
 
+/// One conversation's persistent engagement store: a file-backed knowledge graph
+/// (`{app_data}/kg/{id}.sqlite`) plus the in-memory finding store, both kept alive
+/// across turns so KG nodes/edges and recorded findings accumulate for a
+/// conversation instead of dying with each turn. The `Db` is WAL-backed, so the
+/// graph also survives an app restart (re-opened lazily on the next run).
+struct Engagement {
+    db: Db,
+    findings: FindingStore,
+}
+
+/// The per-session engagement stores, keyed by the same session id as `Sessions`
+/// so a knowledge graph shares its conversation's lifetime.
+#[derive(Default)]
+struct Engagements(Mutex<HashMap<String, Engagement>>);
+
+/// The KG directory (`{app_data}/kg`), created if needed.
+fn kg_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("kg");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Handles (KG + finding store) for a conversation's persistent engagement,
+/// opened once per session and cached. Both handles share their inner `Arc`, so
+/// the tools registered for a turn write into the session's durable store. If the
+/// file-backed DB can't be opened (e.g. disk error), it degrades to an in-memory
+/// graph for the session rather than failing the run.
+fn engagement_handles(
+    engagements: &Engagements,
+    app: &AppHandle,
+    session_id: &str,
+) -> (Db, FindingStore) {
+    let mut map = engagements.0.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = map.entry(session_id.to_string()).or_insert_with(|| {
+        let db = kg_dir(app)
+            .and_then(|d| Db::open(&d.join(format!("{session_id}.sqlite"))))
+            .unwrap_or_else(|e| {
+                eprintln!("kg: file-backed store unavailable ({e}); using in-memory graph");
+                decibel_offsec::ephemeral_db()
+            });
+        Engagement { db, findings: FindingStore::new() }
+    });
+    (entry.db.handle(), entry.findings.clone())
+}
+
+/// Delete a session's on-disk knowledge graph (the sqlite file + its WAL/SHM
+/// sidecars). Best-effort — a still-open handle on Windows may keep the file.
+fn remove_kg(app: &AppHandle, id: &str) {
+    if let Ok(dir) = kg_dir(app) {
+        for suffix in ["sqlite", "sqlite-wal", "sqlite-shm"] {
+            let _ = std::fs::remove_file(dir.join(format!("{id}.{suffix}")));
+        }
+    }
+}
+
 /// Live MCP tool servers configured in Settings. `configs` is the operator's
 /// server list (persisted alongside the frontend's localStorage copy); `clients`
 /// keeps the probe connections from `set_mcp_servers` alive so a warm connection
@@ -244,8 +301,69 @@ enum RunEvt {
     /// A tool settled, carrying its rendered `output` and canonical `value` so
     /// the UI can render a rich card (terminal, ports table, diff, …).
     ToolResult { name: String, ok: bool, output: String, value: Option<Value> },
+    // Nested specialist events (orchestrate mode) — a live sub-agent timeline that
+    // nests under the `delegate` card. `delegation` correlates a specialist lane.
+    SpecialistStart { delegation: u64, specialist: String, task: String },
+    SpecialistStep { delegation: u64, specialist: String, n: u64 },
+    SpecialistToken { delegation: u64, specialist: String, text: String },
+    SpecialistToolCall { delegation: u64, specialist: String, name: String, args: String },
+    SpecialistToolResult {
+        delegation: u64,
+        specialist: String,
+        name: String,
+        ok: bool,
+        output: String,
+        value: Option<Value>,
+    },
+    SpecialistEnd {
+        delegation: u64,
+        specialist: String,
+        ok: bool,
+        stop: String,
+        steps: u64,
+        findings_added: u64,
+        summary: String,
+    },
     Done,
     Error { message: String },
+}
+
+/// Map an orchestrator [`SpecialistEvent`] to the UI-facing [`RunEvt`].
+fn specialist_evt(ev: SpecialistEvent) -> RunEvt {
+    match ev {
+        SpecialistEvent::Start { delegation, specialist, task } => {
+            RunEvt::SpecialistStart { delegation, specialist, task }
+        }
+        SpecialistEvent::Step { delegation, specialist, n } => {
+            RunEvt::SpecialistStep { delegation, specialist, n }
+        }
+        SpecialistEvent::Token { delegation, specialist, text } => {
+            RunEvt::SpecialistToken { delegation, specialist, text }
+        }
+        SpecialistEvent::ToolCall { delegation, specialist, name, args } => {
+            RunEvt::SpecialistToolCall { delegation, specialist, name, args }
+        }
+        SpecialistEvent::ToolResult { delegation, specialist, name, ok, output, value } => {
+            RunEvt::SpecialistToolResult { delegation, specialist, name, ok, output, value }
+        }
+        SpecialistEvent::End {
+            delegation,
+            specialist,
+            ok,
+            stop,
+            steps,
+            findings_added,
+            summary,
+        } => RunEvt::SpecialistEnd {
+            delegation,
+            specialist,
+            ok,
+            stop,
+            steps,
+            findings_added: findings_added as u64,
+            summary,
+        },
+    }
 }
 
 /// Resolve a provider's key: OS keyring first, then its env var (dev convenience).
@@ -349,6 +467,7 @@ async fn run_prompt(
     on_event: Channel<RunEvt>,
     runs: State<'_, RunRegistry>,
     sessions: State<'_, Sessions>,
+    engagements: State<'_, Engagements>,
     mcp: State<'_, McpState>,
 ) -> Result<(), String> {
     let key = match resolve_key(&provider) {
@@ -380,20 +499,26 @@ async fn run_prompt(
     //    non-destructive subset, otherwise the full 79-tool arsenal.
     let plan = mode == "plan";
     let orchestrate = mode == "orchestrate";
+    // The conversation's persistent engagement store (file-backed KG + finding
+    // store), shared across turns. Held in `Engagements` state, so tools registered
+    // for this turn write into a store that outlives the turn — the knowledge graph
+    // and recorded findings accumulate instead of resetting each turn.
+    let (db, findings) = engagement_handles(&engagements, &app, &session_id);
     let mut registry = ToolRegistry::new();
-    let findings = if orchestrate {
-        let (reg, f) = build_engagement(adapter.clone(), model.clone(), 1200);
-        registry = reg;
-        f
-    } else {
-        let findings = FindingStore::new();
-        if !plan {
-            let names: &[&str] = if access == "readonly" { READONLY_TOOLS } else { ALL_TOOLS };
-            register_named(&mut registry, names, &findings);
-        }
-        findings
-    };
-    let _findings = findings;
+    if orchestrate {
+        // Forward each specialist's live progress to the UI as a nested timeline
+        // under its `delegate` card. The channel is Send + Sync, so the sink is too.
+        let sink: SpecialistSink = {
+            let out = on_event.clone();
+            Arc::new(move |ev: SpecialistEvent| {
+                let _ = out.send(specialist_evt(ev));
+            })
+        };
+        registry = build_engagement(adapter.clone(), model.clone(), 1200, findings.clone(), db.handle(), Some(sink));
+    } else if !plan {
+        let names: &[&str] = if access == "readonly" { READONLY_TOOLS } else { ALL_TOOLS };
+        register_named_with_db(&mut registry, names, &findings, &db);
+    }
 
     // Safety envelope for any EXECUTING run (act, read-only, and orchestrate —
     // never plan, which runs no tools):
@@ -580,8 +705,18 @@ fn path_is_dir(path: String) -> bool {
 /// `/clear` and New Session. An in-flight run/compact holds its own `Arc` clone,
 /// so it finishes on the now-orphaned session while the next run starts fresh.
 #[tauri::command]
-fn clear_session(session_id: String, sessions: State<'_, Sessions>) {
+fn clear_session(
+    session_id: String,
+    sessions: State<'_, Sessions>,
+    engagements: State<'_, Engagements>,
+) {
     if let Ok(mut map) = sessions.0.lock() {
+        map.remove(&session_id);
+    }
+    // Release the in-memory KG handle so the next run re-opens it fresh. The file
+    // stays on disk — the conversation remains reloadable from the sidebar, and its
+    // knowledge graph should come back with it. (delete_session removes the file.)
+    if let Ok(mut map) = engagements.0.lock() {
         map.remove(&session_id);
     }
 }
@@ -909,9 +1044,14 @@ fn load_session(
     Ok(display)
 }
 
-/// Delete a saved session (files + in-memory entry).
+/// Delete a saved session (files + in-memory entry + its knowledge graph).
 #[tauri::command]
-fn delete_session(app: AppHandle, id: String, sessions: State<'_, Sessions>) {
+fn delete_session(
+    app: AppHandle,
+    id: String,
+    sessions: State<'_, Sessions>,
+    engagements: State<'_, Engagements>,
+) {
     if let Ok(dir) = sessions_dir(&app) {
         let _ = std::fs::remove_file(dir.join(format!("{id}.jsonl")));
         let _ = std::fs::remove_file(dir.join(format!("{id}.meta.json")));
@@ -919,6 +1059,11 @@ fn delete_session(app: AppHandle, id: String, sessions: State<'_, Sessions>) {
     if let Ok(mut map) = sessions.0.lock() {
         map.remove(&id);
     }
+    // Drop the KG handle first so the file is unlocked, then delete it.
+    if let Ok(mut map) = engagements.0.lock() {
+        map.remove(&id);
+    }
+    remove_kg(&app, &id);
 }
 
 /// Rename a saved session (updates its metadata title).
@@ -944,6 +1089,7 @@ fn main() {
         .setup(|app| {
             app.manage(RunRegistry::default());
             app.manage(Sessions::default());
+            app.manage(Engagements::default());
             app.manage(McpState::default());
             Ok(())
         })

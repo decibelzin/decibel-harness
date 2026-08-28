@@ -52,6 +52,24 @@ impl Db {
         let conn = open_conn(path)?;
         Ok(Db(Arc::new(Mutex::new(conn))))
     }
+
+    /// A second handle to the SAME underlying connection (clones the inner `Arc`).
+    /// `Db` is deliberately not `Clone` — this names the shared-handle intent, so a
+    /// per-session store can be handed to many turns/tools that all lock one file.
+    pub fn handle(&self) -> Self {
+        Db(self.0.clone())
+    }
+
+    /// Total number of recorded findings across all engagements in this store —
+    /// the count `record_finding` grows (the KG's `finding` table). Locks the
+    /// connection; returns 0 on any error so a caller using it for a progress
+    /// delta never panics.
+    pub fn finding_count(&self) -> usize {
+        let conn = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row("SELECT COUNT(*) FROM finding", [], |r| r.get::<_, i64>(0))
+            .map(|n| n as usize)
+            .unwrap_or(0)
+    }
 }
 
 /// Current unix time in whole seconds.
@@ -99,6 +117,12 @@ fn open_conn(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("wal: {e}"))?;
     conn.pragma_update(None, "foreign_keys", "ON")
         .map_err(|e| format!("fk: {e}"))?;
+    // If a session is cleared mid-run and reopened, a second connection to this
+    // file can briefly coexist with the winding-down run's connection. A busy
+    // timeout makes a write wait for the other connection's lock (WAL serializes
+    // writers) instead of returning SQLITE_BUSY immediately and losing the write.
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(|e| format!("busy_timeout: {e}"))?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -920,6 +944,22 @@ mod tests {
         let fs = list_findings(&conn, &eng.id).unwrap();
         assert_eq!(fs.len(), 1);
         assert_eq!(fs[0].severity, "high");
+    }
+
+    #[test]
+    fn finding_count_totals_across_engagements() {
+        // The delegation progress delta relies on this counting every engagement's
+        // findings (a specialist may record under any engagement slug).
+        let db = Db(Arc::new(Mutex::new(open_memory())));
+        assert_eq!(db.finding_count(), 0);
+        {
+            let conn = db.0.lock().unwrap();
+            let a = create_engagement(&conn, "a", "A").unwrap();
+            let b = create_engagement(&conn, "b", "B").unwrap();
+            add_finding(&conn, &a.id, "high", "x", "t", "{}", "s").unwrap();
+            add_finding(&conn, &b.id, "low", "y", "t", "{}", "s").unwrap();
+        }
+        assert_eq!(db.finding_count(), 2);
     }
 
     #[test]

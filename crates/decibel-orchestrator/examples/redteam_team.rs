@@ -59,9 +59,18 @@ async fn main() {
         eprintln!("──────── orchestrator model: {model} ────────");
         eprintln!("  (streaming — Ctrl+C to stop; specialists run indented)\n");
 
-        // The engagement shares one finding store across the orchestrator and
-        // every specialist it delegates to.
-        let (registry, findings) = build_engagement(adapter.clone(), model.clone(), 1200);
+        // The engagement shares one finding store + knowledge graph across the
+        // orchestrator and every specialist it delegates to. This CLI example uses
+        // an ephemeral in-memory graph and no nested-timeline sink.
+        let findings = decibel_offsec::FindingStore::new();
+        let registry = build_engagement(
+            adapter.clone(),
+            model.clone(),
+            1200,
+            findings.clone(),
+            decibel_offsec::ephemeral_db(),
+            None,
+        );
 
         let mut session = Session::new(format!("engagement-{i}"));
         let config = AgentConfig::new("deepseek", model).with_system(orchestrator_system()).with_max_tokens(1000);

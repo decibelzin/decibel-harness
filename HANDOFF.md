@@ -37,19 +37,20 @@ compiles and `cargo test --workspace` is GREEN (~380 tests).** The native app wa
 - `60a1750` app backend: orchestrate mode + widened read-only subset
 - `9c32934` app UI slice: orchestrate toggle, findings panel, envelope (shield+strip+scope), MCP config Settings tab
 
-### ⚠️ UNCOMMITTED — commit this FIRST
+### NEWER — §1 both follow-ups DONE this session (nested streaming + persistent KG)
 
-A live-test fix is applied + **verified green by the user** but NOT yet committed
-(the session's Bash tool got safety-blocked, so the user must run the commit):
-```
-cd ~/Desktop/decibel-harness && git add crates/decibel-offsec/src/shell.rs crates/decibel-offsec/src/exec.rs crates/decibel-executor/src/session.rs crates/decibel-executor/src/lib.rs apps/desktop/src-tauri/src/main.rs && git commit -m "fix(shell): prefer Git Bash over cmd on Windows; raise run max_steps to 40"
-```
-What it fixes (both found by the live recon): the `shell`/`bash`-session tools ran
-under **cmd** on Windows, mangling the model's POSIX commands — now they prefer
-**Git Bash** (fallback cmd), and the session emits its completion marker in the
-matching syntax (`Session.posix`, `shell_is_posix()`). And `run_prompt`'s per-turn
-step budget rose from the default **16** (which capped the recon mid-engagement)
-to **40**.
+The §0 shell/max_steps fix is committed (`66c4f08`) and everything through the
+Decepticon port is pushed. **This session implemented the whole of backlog §1**
+(nested specialist streaming + persistent KG/findings) — see the §1 entry below,
+now marked done. All green: `cargo test --workspace` **382 pass**, Tauri
+`cargo check` clean, `tsc --noEmit` clean. An adversarial 4-dimension review ran
+after and found 3 real issues, all fixed (findings_added counted the wrong store;
+no sqlite busy_timeout; the specialist end-summary was invisible for non-streaming
+models). **Uncommitted at handoff** unless the commit below already ran.
+
+> ⚠️ Stray untracked junk in the tree — do NOT `git add -A`. Never-ours:
+> `test_ports.py`, `apps/desktop/src-tauri/4000`, and a new reserved-name file
+> `crates/decibel-offsec/NUL`. Always add the changed files explicitly.
 
 ---
 
@@ -128,21 +129,30 @@ forbids reuse — do NOT port from it.**
 
 ## WHAT'S LEFT TO DO (the backlog)
 
-### 0. Commit the pending shell/max_steps fix (above) — do this first.
+### 0. Commit the pending shell/max_steps fix — ✅ DONE (`66c4f08`, pushed).
 
-### 1. The two deferred integration follow-ups (highest value)
-- **Nested specialist streaming** — the orchestrator's `SubagentTool` streams a
-  specialist's live `Progress` only via `eprintln!` to stderr. Thread an event
-  sink through `SubagentTool`/`build_engagement` → new `RunEvt` variants (e.g.
-  `SpecialistStart/Step/Tool/End`) → mirror in `api.ts` `RunEvent` + `store.ts`
-  `applyEvent` → render a nested sub-agent timeline in the UI. (Without it,
-  orchestrate mode shows one opaque `delegate` card.)
-- **Persistent KG + findings-across-turns** — `register_named` mints an ephemeral
-  in-memory KG per turn and `run_prompt` still does `let _findings = findings;`
-  (discards). Add a `register_named` variant taking an injected `decibel_store::Db`;
-  open a per-session file-backed `Db::open({app_data}/kg/<session>.sqlite)` held in
-  app state; stop discarding the FindingStore. Then KG/findings persist across
-  turns and reloads.
+### 1. The two deferred integration follow-ups — ✅ DONE this session
+- **Nested specialist streaming** ✅ — `decibel-orchestrator` gained
+  `SpecialistEvent`/`SpecialistSink`; `SubagentTool` forwards each specialist's
+  Start/Step/Token/ToolCall/ToolResult/End to the sink (stderr fallback when
+  headless). `build_engagement(adapter, model, max_tokens, findings, store, sink)`
+  threads it. New `RunEvt::Specialist*` variants → `api.ts` `RunEvent` → `store.ts`
+  `applyEvent` attaches a nested `SpecialistRun` to the `delegate` `ToolBlock` →
+  `App.tsx` `SpecialistTimeline` (reuses `BlockView`, so nested nmap/http cards
+  render) + CSS. Browser mock got an orchestrate branch. The `delegate` card now
+  shows the live sub-agent timeline in place of the opaque summary.
+- **Persistent KG + findings-across-turns** ✅ — `decibel-store` `Db::handle()`
+  (+ `Db::finding_count()`, `busy_timeout`). `decibel-offsec` split
+  `register_named` → `register_named_with_db(registry, names, findings, &Db)` +
+  `ephemeral_db()`, and re-exports `Db`. The app holds per-session
+  `Engagement { db, findings }` in `Engagements` state, opening
+  `{app_data}/kg/<session>.sqlite` once per session (`engagement_handles`),
+  injected into BOTH the act path (`register_named_with_db`) and orchestrate
+  (`build_engagement`). `clear_session` drops the handle (keeps the file, session
+  stays reloadable); `delete_session` drops it + deletes the kg files. KG +
+  `record_finding` now persist across turns AND app restarts (WAL). Bonus:
+  `findings()` now reads both finding shapes (`add_finding`'s `value.finding` and
+  `record_finding`'s flat `value`), so the primary KG recorder shows in the drawer.
 
 ### 2. Findings + reporting
 - **Export a report** from the findings panel (a button → markdown/SARIF via
@@ -181,9 +191,13 @@ goals · background jobs · **Code Mode** (run_code + SDK) · message feedback.
 
 ## Suggested next-session order
 
-1. **Commit the pending fix** (§0), then **push** if the user wants (`git push`).
-2. **Persistent KG + findings** (§1b) and **nested specialist streaming** (§1a) — the two follow-ups that finish the multi-agent experience.
-3. **Findings export** (§2), then **auto-compaction / usage meter** (§3), then **Remote-SSH in the app** (§4).
+1. §0 (commit fix) and §1 (both follow-ups) are **DONE**. If the §1 commit hasn't
+   run yet, commit the 9 changed files (see the ⚠️ stray-junk note above), then push.
+2. **Findings export** (§2) — a report button on the findings panel (markdown/SARIF
+   via `report_executive` / the store's SARIF renderer). Now that the KG is
+   persistent, this reads real accumulated state. Pairs with returning/streaming
+   findings as first-class data.
+3. **Auto-compaction / usage meter** (§3), then **Remote-SSH in the app** (§4).
 4. Parity (§5) and debts (§7) as capacity allows.
 
 Rebuild = close app + `npm run app`. Keep committing per feature. An adversarial

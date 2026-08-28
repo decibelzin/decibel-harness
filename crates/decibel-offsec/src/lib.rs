@@ -39,6 +39,10 @@ use std::sync::Arc;
 
 use decibel_tools::ToolRegistry;
 
+/// The knowledge-graph store handle, re-exported so the app and orchestrator can
+/// open/pass a per-engagement `Db` without a direct `decibel-store` dependency.
+pub use decibel_store::Db;
+
 pub use findings::{AddFindingTool, Finding, FindingStore};
 pub use fs::{ReadFileTool, StrReplaceTool, WriteFileTool};
 pub use http::HttpTool;
@@ -115,20 +119,39 @@ pub const ALL_TOOLS: &[&str] = &[
     "complete_engagement_planning", "validate_plan_doc", "skills_find", "skills_load",
 ];
 
+/// A fresh in-memory knowledge-graph store — the self-contained default for a
+/// registry (and for tests). The Tauri app hands in a file-backed, per-session
+/// `Db` instead (see [`register_named_with_db`]) so the graph persists.
+pub fn ephemeral_db() -> Db {
+    Db(Arc::new(std::sync::Mutex::new(decibel_store::open_memory())))
+}
+
 /// Register the named subset of the toolkit into `registry`, sharing `findings`
 /// as the store `add_finding` records into. Unknown names are ignored, so a
 /// specialist can name exactly the tools it should have. `add_finding` is only
 /// installed when named.
+///
+/// The KG/OPPLAN tools get a fresh **in-memory** graph that dies with the
+/// registry. Use [`register_named_with_db`] to share a persistent, per-session
+/// graph across turns.
 pub fn register_named(registry: &mut ToolRegistry, names: &[&str], findings: &FindingStore) {
+    register_named_with_db(registry, names, findings, &ephemeral_db());
+}
+
+/// Like [`register_named`], but the KG/OPPLAN tools share the caller-supplied
+/// `store` — a file-backed, per-engagement `Db` — instead of a freshly minted
+/// in-memory graph. This is how the app makes the knowledge graph and recorded
+/// findings persist across turns (and app restarts).
+pub fn register_named_with_db(
+    registry: &mut ToolRegistry,
+    names: &[&str],
+    findings: &FindingStore,
+    store: &Db,
+) {
     // One shared session manager for the whole `bash*` family in this registry, so
     // a session opened by `bash` is visible to bash_output/bash_status/bash_kill.
     // Created unconditionally (cheap — an empty map) and used only by the bash arms.
     let sessions = Arc::new(decibel_executor::SessionManager::new("."));
-    // One shared in-memory knowledge-graph store for the KG/OPPLAN tools in this
-    // registry. The Tauri app will later hand in a file-backed, per-engagement Db
-    // shared with the UI; an ephemeral in-memory graph keeps the toolkit
-    // self-contained until then. `Db` is not Clone — share the inner Arc.
-    let store = decibel_store::Db(Arc::new(std::sync::Mutex::new(decibel_store::open_memory())));
     for name in names {
         match *name {
             "shell" => registry.register(Arc::new(ShellTool)),

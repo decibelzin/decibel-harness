@@ -170,6 +170,27 @@ export interface ToolBlock {
   output?: string
   /** The tool's canonical JSON value, for a structured card (nmap, http, …). */
   value?: unknown
+  /** Nested sub-agent run, present only on a `delegate` card (orchestrate mode):
+   * the specialist's live steps/tools/narration streamed under this tool card. */
+  specialist?: SpecialistRun
+}
+/** A specialist subagent's run, nested inside its `delegate` tool card. Its
+ * `blocks` reuse the same Block union as the top-level timeline, so a specialist's
+ * tool calls render as real (nmap/http/…) cards inside the delegation. */
+export interface SpecialistRun {
+  /** The orchestrator's delegation index — correlates streamed events to this lane. */
+  delegation: number
+  name: string
+  task?: string
+  state: 'running' | 'ok' | 'error'
+  stop?: string
+  steps?: number
+  findingsAdded?: number
+  /** The specialist's final summary text. Shown only as a fallback when the run
+   * streamed no narration (some models don't stream text), since otherwise the
+   * streamed tokens already contain it. */
+  summary?: string
+  blocks: Block[]
 }
 /** A run-level system note shown inline (e.g. an automatic model fallback). */
 export interface NoticeBlock {
@@ -356,6 +377,18 @@ function stripUntrusted(s: string): string {
   return s
 }
 
+/** The nested specialist sub-run for `delegation`, found by reverse-scanning the
+ * assistant blocks for its `delegate` card. Returns undefined if not yet started. */
+function findSpecialist(blocks: Block[], delegation: number): SpecialistRun | undefined {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i]
+    if (b.kind === 'tool' && b.name === 'delegate' && b.specialist?.delegation === delegation) {
+      return b.specialist
+    }
+  }
+  return undefined
+}
+
 function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): void {
   // Ignore events from a run that was cancelled or superseded by a newer one.
   if (runId !== activeRunId) return
@@ -385,6 +418,64 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
               b.value = e.value
               break
             }
+          }
+          break
+        }
+        // ── nested specialist (orchestrate) events ──────────────────────────────
+        // Each attaches to a `delegate` card and mutates its `specialist` sub-run,
+        // whose `blocks` mirror the top-level timeline logic (token/tool_call/…).
+        case 'specialist_start': {
+          // Attach to the most recent still-running delegate card without a sub-run.
+          for (let i = blocks.length - 1; i >= 0; i--) {
+            const b = blocks[i]
+            if (b.kind === 'tool' && b.name === 'delegate' && b.state === 'running' && !b.specialist) {
+              b.specialist = { delegation: e.delegation, name: e.specialist, task: e.task, state: 'running', blocks: [] }
+              break
+            }
+          }
+          break
+        }
+        case 'specialist_token': {
+          const sr = findSpecialist(blocks, e.delegation)
+          if (!sr) break
+          const last = sr.blocks[sr.blocks.length - 1]
+          if (last && last.kind === 'text') last.text += e.text
+          else sr.blocks.push({ kind: 'text', text: e.text })
+          break
+        }
+        case 'specialist_tool_call': {
+          const sr = findSpecialist(blocks, e.delegation)
+          if (!sr) break
+          sr.blocks.push({ kind: 'tool', name: e.name, args: e.args, state: 'running' })
+          break
+        }
+        case 'specialist_tool_result': {
+          const sr = findSpecialist(blocks, e.delegation)
+          if (!sr) break
+          for (let i = sr.blocks.length - 1; i >= 0; i--) {
+            const t = sr.blocks[i]
+            if (t.kind === 'tool' && t.name === e.name && t.state === 'running') {
+              t.state = e.ok ? 'ok' : 'error'
+              t.output = stripUntrusted(e.output)
+              t.value = e.value
+              break
+            }
+          }
+          break
+        }
+        case 'specialist_step': {
+          const sr = findSpecialist(blocks, e.delegation)
+          if (sr) sr.steps = e.n
+          break
+        }
+        case 'specialist_end': {
+          const sr = findSpecialist(blocks, e.delegation)
+          if (sr) {
+            sr.state = e.ok ? 'ok' : 'error'
+            sr.stop = e.stop
+            sr.steps = e.steps
+            sr.findingsAdded = e.findings_added
+            sr.summary = e.summary
           }
           break
         }
@@ -423,11 +514,17 @@ function sevRank(s: string): number {
  * `conversation.list` makes it reactive, so the drawer updates as findings land. */
 export function findings(): Finding[] {
   const out: Finding[] = []
-  for (const msg of conversation.list) {
-    for (const b of msg.blocks) {
+  // Scan a block list for finding tool-cards, descending into any nested
+  // specialist sub-run so findings recorded inside a delegation surface too.
+  const scan = (blocks: Block[]): void => {
+    for (const b of blocks) {
       if (b.kind !== 'tool') continue
+      if (b.specialist?.blocks) scan(b.specialist.blocks)
       if (b.name !== 'add_finding' && b.name !== 'record_finding') continue
-      const f = (b.value as { finding?: Partial<Finding> } | undefined)?.finding
+      // `add_finding` nests the finding under `.finding`; `record_finding` returns
+      // the finding object as its value directly — accept either shape.
+      const raw = b.value as { finding?: Partial<Finding> } & Partial<Finding> | undefined
+      const f = raw && typeof raw === 'object' ? raw.finding ?? raw : undefined
       if (!f) continue
       out.push({
         title: String(f.title ?? b.output ?? 'finding'),
@@ -438,6 +535,7 @@ export function findings(): Finding[] {
       })
     }
   }
+  for (const msg of conversation.list) scan(msg.blocks)
   // Stable severity sort (critical first); equal severities keep discovery order.
   return out
     .map((f, i) => [f, i] as const)

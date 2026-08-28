@@ -23,6 +23,14 @@ export type RunEvent =
   // `output` is the tool's rendered model-facing text; `value` is its canonical
   // JSON (present on success) — the source for structured cards (nmap, http, …).
   | { type: 'tool_result'; name: string; ok: boolean; output: string; value: unknown }
+  // Nested specialist events (orchestrate mode): a live sub-agent timeline under
+  // the `delegate` card. `delegation` correlates the events to one specialist lane.
+  | { type: 'specialist_start'; delegation: number; specialist: string; task: string }
+  | { type: 'specialist_step'; delegation: number; specialist: string; n: number }
+  | { type: 'specialist_token'; delegation: number; specialist: string; text: string }
+  | { type: 'specialist_tool_call'; delegation: number; specialist: string; name: string; args: string }
+  | { type: 'specialist_tool_result'; delegation: number; specialist: string; name: string; ok: boolean; output: string; value: unknown }
+  | { type: 'specialist_end'; delegation: number; specialist: string; ok: boolean; stop: string; steps: number; findings_added: number; summary: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
 
@@ -106,7 +114,7 @@ export async function runPrompt(
     })
     return
   }
-  await mockRun(prompt, model, onEvent, signal)
+  await mockRun(prompt, model, mode, onEvent, signal)
 }
 
 // ── MCP servers (Tauri; no-op in browser preview) ────────────────────────────
@@ -219,6 +227,7 @@ export async function renameSession(id: string, title: string): Promise<void> {
 async function mockRun(
   prompt: string,
   _model: string,
+  mode: string,
   onEvent: (e: RunEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -229,6 +238,14 @@ async function mockRun(
       onEvent({ type: 'token', text: word })
       await sleep(14)
     }
+  }
+
+  // Orchestrate mode: demonstrate the nested specialist timeline — the
+  // orchestrator delegates to a specialist whose live steps/tools/narration
+  // stream INSIDE the `delegate` card.
+  if (mode === 'orchestrate') {
+    await mockOrchestrate(emitText, sleep, onEvent, signal)
+    return
   }
 
   onEvent({ type: 'step', n: 1 })
@@ -315,5 +332,69 @@ async function mockRun(
   await emitText(
     "\n\n## Summary\n\n`127.0.0.1` exposes:\n\n- **SSH** (22) — OpenSSH `8.9p1`\n- **HTTP** (80) — nginx fronting an **Express** app\n\nOne low-severity finding recorded (framework disclosure). Next I'd fingerprint the Express routes and test for common misconfigurations.\n\n> This is a mocked run — the Tauri build drives the real agent.",
   )
+  onEvent({ type: 'done' })
+}
+
+/** Mock the orchestrate flow: the orchestrator narrates, then delegates to a
+ * `recon` specialist whose steps/tools/narration stream nested under the
+ * `delegate` card, then closes the phase. Exercises the nested-timeline UI. */
+async function mockOrchestrate(
+  emitText: (t: string) => Promise<void>,
+  sleep: (ms: number) => Promise<unknown>,
+  onEvent: (e: RunEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const d = 0 // one delegation lane
+  onEvent({ type: 'step', n: 1 })
+  await emitText('Planning the engagement. I’ll delegate reconnaissance to the `recon` specialist first.')
+  if (signal?.aborted) return
+
+  // The orchestrator's `delegate` tool call opens the card the specialist nests in.
+  onEvent({ type: 'tool_call', name: 'delegate', args: '{"specialist":"recon","task":"Enumerate open ports and services on 127.0.0.1"}' })
+  onEvent({ type: 'specialist_start', delegation: d, specialist: 'recon', task: 'Enumerate open ports and services on 127.0.0.1' })
+  await sleep(300)
+
+  onEvent({ type: 'specialist_step', delegation: d, specialist: 'recon', n: 1 })
+  for (const word of 'Running a structured port scan against the target.'.split(/(\s+)/)) {
+    if (signal?.aborted) return
+    onEvent({ type: 'specialist_token', delegation: d, specialist: 'recon', text: word })
+    await sleep(14)
+  }
+  onEvent({ type: 'specialist_tool_call', delegation: d, specialist: 'recon', name: 'port_scan', args: '{"target":"127.0.0.1"}' })
+  await sleep(600)
+  onEvent({
+    type: 'specialist_tool_result',
+    delegation: d,
+    specialist: 'recon',
+    name: 'port_scan',
+    ok: true,
+    output: 'port_scan 127.0.0.1 — 2 open\n  22/tcp ssh\n  80/tcp http',
+    value: { target: '127.0.0.1', open: [{ port: 22, service: 'ssh' }, { port: 80, service: 'http' }] },
+  })
+
+  onEvent({ type: 'specialist_tool_call', delegation: d, specialist: 'recon', name: 'record_finding', args: '{"title":"SSH exposed to the network"}' })
+  await sleep(300)
+  onEvent({
+    type: 'specialist_tool_result',
+    delegation: d,
+    specialist: 'recon',
+    name: 'record_finding',
+    ok: true,
+    output: 'recorded finding: [info] SSH exposed to the network',
+    value: { recorded: true, finding: { title: 'SSH exposed to the network', severity: 'info', target: '127.0.0.1:22', mitre: 'T1046' } },
+  })
+
+  onEvent({ type: 'specialist_end', delegation: d, specialist: 'recon', ok: true, stop: 'completed', steps: 2, findings_added: 1, summary: 'Found SSH (22) and HTTP (80) open; recorded one info finding.' })
+  // The `delegate` tool settles with the specialist's returned summary.
+  onEvent({
+    type: 'tool_result',
+    name: 'delegate',
+    ok: true,
+    output: '[recon] completed, 2 step(s), 1 finding(s) recorded.\nFound SSH (22) and HTTP (80) open; recorded one info finding.',
+    value: { specialist: 'recon', steps: 2, findings_added: 1, stop: 'completed', summary: 'Found SSH (22) and HTTP (80) open.' },
+  })
+
+  onEvent({ type: 'step', n: 2 })
+  await emitText('\n\nRecon complete. Next I’d delegate exploitation of the exposed HTTP service. \n\n> Mocked orchestrate run — the Tauri build drives the real 17-specialist roster.')
   onEvent({ type: 'done' })
 }
