@@ -19,11 +19,13 @@ import {
   engagementScope,
   findings,
   findingsOpen,
+  goalsOpen,
   isCommand,
   maxSteps,
   mcpServers,
   mode,
   modelPickerOpen,
+  objectives,
   openSession,
   pendingImage,
   refreshSessions,
@@ -38,6 +40,7 @@ import {
   setAgentsPanelOpen,
   setAutoCompact,
   setEngagementScope,
+  setGoalsOpen,
   setMaxSteps,
   setRemoteExec,
   setFindingsOpen,
@@ -71,6 +74,7 @@ import {
   type Finding,
   type McpServer,
   type Mode,
+  type Objective,
   type SlashCommand,
   type SpecialistRun,
   type ToolBlock,
@@ -143,6 +147,7 @@ const IconWrench = () => svg(<path d="M14 6a4 4 0 0 0-5 5L4 16l4 4 5-5a4 4 0 0 0
 const IconSwitch = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points="18 2 18 7 13 7" /><path d="M20 12a8 8 0 0 1-14 5" /><polyline points="6 22 6 17 11 17" /></>, 13)
 const IconFlag = () => svg(<><line x1="5" y1="21" x2="5" y2="3" /><path d="M5 4h12l-2.5 4L17 12H5" /></>, 16)
 const IconAgents = () => svg(<><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0" /><path d="M16 6a3 3 0 0 1 0 6" /><path d="M18.5 20a6 6 0 0 0-3-5.2" /></>, 15)
+const IconTarget = () => svg(<><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="4" /><circle cx="12" cy="12" r="0.6" fill="currentColor" /></>, 15)
 
 // ── sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar() {
@@ -233,6 +238,10 @@ function Sidebar() {
           <span class="fbadge">{agentRuns().length}</span>
         </Show>
       </button>
+      <button class="findings-btn" onClick={() => setGoalsOpen(true)}>
+        <IconTarget /> Goals
+        <Show when={objectives().length}><span class="fbadge">{objectives().length}</span></Show>
+      </button>
       <button class="findings-btn" onClick={() => setFindingsOpen(true)}>
         <IconFlag /> Findings
         <Show when={findings().length}><span class="fbadge">{findings().length}</span></Show>
@@ -285,6 +294,48 @@ function FindingsPanel() {
                   </div>
                   <Show when={f.target}><div class="fd-target">{f.target}</div></Show>
                   <Show when={f.description}><div class="fd-desc">{f.description}</div></Show>
+                </div>
+              )}
+            </For>
+          </Show>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── goals drawer (the OPPLAN objective tree, from the persistent KG) ───────────
+function GoalsPanel() {
+  const sorted = () => [...objectives()].sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title))
+  const done = () => objectives().filter((o) => o.status === 'completed').length
+  return (
+    <div class="modal-backdrop findings-back" onClick={() => setGoalsOpen(false)}>
+      <div class="findings-drawer" onClick={(e) => e.stopPropagation()}>
+        <div class="fp-head">
+          <span class="fp-ico"><IconTarget /></span>
+          <span class="fp-title">Goals</span>
+          <span class="fp-count">{done()}/{objectives().length}</span>
+          <button class="x" onClick={() => setGoalsOpen(false)}>✕</button>
+        </div>
+        <div class="fp-body">
+          <Show
+            when={objectives().length}
+            fallback={
+              <div class="fp-empty">
+                No objectives yet. In <b>orchestrate</b> mode the agent plans the engagement with
+                {' '}<code>add_objective</code> / <code>objective_expand</code> — the goal tree shows here.
+              </div>
+            }
+          >
+            <For each={sorted()}>
+              {(o: Objective) => (
+                <div class={`goal-item ${o.parent_id ? 'child' : ''}`}>
+                  <div class="goal-head">
+                    <span class={`gstatus ${o.status.replace(/[^a-z-]/gi, '')}`}>{o.status}</span>
+                    <span class="goal-title">{o.title}</span>
+                    <Show when={o.phase}><span class="goal-phase">{o.phase}</span></Show>
+                  </div>
+                  <Show when={o.notes}><div class="goal-notes">{o.notes}</div></Show>
                 </div>
               )}
             </For>
@@ -1575,6 +1626,7 @@ export default function App() {
       <Show when={settingsOpen()}><Settings /></Show>
       <Show when={workspacePanelOpen()}><WorkspacePanel /></Show>
       <Show when={findingsOpen()}><FindingsPanel /></Show>
+      <Show when={goalsOpen()}><GoalsPanel /></Show>
     </div>
   )
 }

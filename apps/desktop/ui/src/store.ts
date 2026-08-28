@@ -12,7 +12,9 @@ import {
   runPrompt,
   sessionContext,
   sessionFindings,
+  sessionObjectives,
   setMcpServers as apiSetMcpServers,
+  type Objective,
   type DisplayMsg,
   type ModelInfo,
   type SessionMeta,
@@ -281,6 +283,14 @@ export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
 // Drives the Findings drawer (a live, severity-sorted view over the transcript).
 export const [findingsOpen, setFindingsOpen] = createSignal(false)
+// Drives the Goals drawer (the OPPLAN objective tree, from the persistent KG).
+export const [goalsOpen, setGoalsOpen] = createSignal(false)
+export const [objectives, setObjectives] = createSignal<Objective[]>([])
+export type { Objective }
+/** Reload the session's objectives (goals) from the persistent KG. */
+export async function refreshObjectives(): Promise<void> {
+  setObjectives(await sessionObjectives(sessionId).catch(() => []))
+}
 // Live context-usage for the composer meter — refreshed after each turn (backend
 // `session_context`); reset when the conversation changes.
 export const [contextInfo, setContextInfo] = createSignal<import('./api').ContextInfo | null>(null)
@@ -375,6 +385,7 @@ export async function openSession(id: string): Promise<void> {
     setConversation('list', display.map(mapDisplayMsg))
     setContextInfo(null) // meter re-estimates from the loaded transcript
     void refreshPersistedFindings() // findings the reloaded transcript can't show
+    void refreshObjectives() // goals live in the KG, not the transcript
     setComposerDraft('') // a draft/image prepared for the old conversation shouldn't leak
     setPendingImage('')
   } catch {
@@ -412,6 +423,7 @@ export function newSession(): void {
   setConversation('list', [])
   setContextInfo(null)
   setPersistedFindings([])
+  setObjectives([])
   setComposerDraft('')
   setPendingImage('')
   setSessionLoading(false)
@@ -646,6 +658,8 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
     void refreshContext()
     // Pick up any findings this turn recorded into the KG / finding store.
     void refreshPersistedFindings()
+    // ...and any objectives (goals) the turn added/updated.
+    void refreshObjectives()
     // The turn was just persisted server-side; refresh the sidebar's session list.
     if (e.type === 'done') void refreshSessions()
   }

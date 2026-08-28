@@ -825,6 +825,48 @@ fn session_findings(
     out
 }
 
+/// One objective (goal) for the UI Goals panel (matches the frontend `Objective`).
+#[derive(Serialize, Clone)]
+struct ObjectiveDto {
+    id: String,
+    phase: String,
+    title: String,
+    status: String,
+    priority: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_id: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    notes: String,
+}
+
+/// The session's OPPLAN objectives (goals) — the objective tree the agent builds
+/// with add_objective/expand_objective. Persisted in the KG, so they survive reload.
+#[tauri::command]
+fn session_objectives(
+    session_id: String,
+    engagements: State<'_, Engagements>,
+    app: AppHandle,
+) -> Vec<ObjectiveDto> {
+    let (db, _findings) = engagement_handles(&engagements, &app, &session_id);
+    let mut out: Vec<ObjectiveDto> = Vec::new();
+    if let Ok(conn) = db.0.lock() {
+        if let Ok(list) = decibel_offsec::kg_list_objectives(&conn, "default") {
+            for o in list {
+                out.push(ObjectiveDto {
+                    id: o.id,
+                    phase: o.phase,
+                    title: o.title,
+                    status: o.status,
+                    priority: o.priority,
+                    parent_id: o.parent_id,
+                    notes: o.notes,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Drop a conversation's session (a new one starts on the next run). Called by
 /// `/clear` and New Session. An in-flight run/compact holds its own `Arc` clone,
 /// so it finishes on the now-orphaned session while the next run starts fresh.
@@ -1251,6 +1293,7 @@ fn main() {
             path_is_dir,
             write_text_file,
             session_findings,
+            session_objectives,
             list_sessions,
             load_session,
             delete_session,

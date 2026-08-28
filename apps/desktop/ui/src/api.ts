@@ -202,6 +202,22 @@ export async function sessionFindings(sessionId: string): Promise<SessionFinding
   return []
 }
 
+/** One OPPLAN objective (goal). Matches the backend `ObjectiveDto`. */
+export interface Objective {
+  id: string
+  phase: string
+  title: string
+  status: string
+  priority: number
+  parent_id?: string
+  notes?: string
+}
+/** The session's objectives (goals), persisted in the KG. Empty in preview. */
+export async function sessionObjectives(sessionId: string): Promise<Objective[]> {
+  if (isTauri()) return await invoke<Objective[]>('session_objectives', { sessionId })
+  return []
+}
+
 /** Whether `path` is an existing directory (validates a chosen workspace). */
 export async function pathIsDir(path: string): Promise<boolean> {
   if (isTauri()) return await invoke<boolean>('path_is_dir', { path })

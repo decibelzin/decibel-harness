@@ -45,6 +45,9 @@ pub use decibel_store::Db;
 /// KG finding reader + row type, re-exported so the app can list the persisted
 /// `record_finding` findings for a session (they survive reload/restart).
 pub use decibel_store::{list_findings as kg_list_findings, Finding as KgFinding};
+/// OPPLAN objective reader + row type, re-exported so the app can list a session's
+/// objectives (goals) for the Goals panel.
+pub use decibel_store::opplan::{list_objectives as kg_list_objectives, Objective};
 /// The execution plane, re-exported so the app/orchestrator can build a Remote
 /// (SSH) backend and hand it to `register_named_with_db` / `build_engagement`.
 pub use decibel_executor::{make as make_executor, Backend, Executor};
