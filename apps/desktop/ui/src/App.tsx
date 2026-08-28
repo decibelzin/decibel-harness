@@ -1307,7 +1307,10 @@ function SpecialistTimeline(props: { run: SpecialistRun }) {
 }
 
 function ToolCardView(props: { block: ToolBlock }) {
-  const [open, setOpen] = createSignal(true)
+  // Start collapsed so the transcript stays a tidy log — the header still shows the
+  // tool, its arg summary, and status at a glance; expand for the full body. In
+  // orchestrate mode the live view is the Agents panel, so nothing is hidden.
+  const [open, setOpen] = createSignal(false)
   const meta = () => toolMeta(props.block.name)
   const label = () => (props.block.state === 'running' ? 'running' : props.block.state === 'ok' ? 'done' : 'error')
   return (
