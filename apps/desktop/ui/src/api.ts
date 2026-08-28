@@ -174,6 +174,22 @@ export async function saveExport(defaultName: string, contents: string): Promise
   }
 }
 
+/** A finding as the backend reports it (matches the store `Finding`). */
+export interface SessionFinding {
+  title: string
+  severity: string
+  description?: string
+  target?: string
+  mitre?: string
+}
+/** Every finding recorded for a session — from the persistent knowledge graph
+ * (`record_finding`, survives reload) and the finding store (`add_finding`). Empty
+ * in the browser preview. */
+export async function sessionFindings(sessionId: string): Promise<SessionFinding[]> {
+  if (isTauri()) return await invoke<SessionFinding[]>('session_findings', { sessionId })
+  return []
+}
+
 /** Whether `path` is an existing directory (validates a chosen workspace). */
 export async function pathIsDir(path: string): Promise<boolean> {
   if (isTauri()) return await invoke<boolean>('path_is_dir', { path })

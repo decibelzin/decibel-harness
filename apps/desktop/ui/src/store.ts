@@ -11,6 +11,7 @@ import {
   renameSession,
   runPrompt,
   sessionContext,
+  sessionFindings,
   setMcpServers as apiSetMcpServers,
   type DisplayMsg,
   type ModelInfo,
@@ -255,6 +256,23 @@ export const [findingsOpen, setFindingsOpen] = createSignal(false)
 // Live context-usage for the composer meter — refreshed after each turn (backend
 // `session_context`); reset when the conversation changes.
 export const [contextInfo, setContextInfo] = createSignal<import('./api').ContextInfo | null>(null)
+// Findings persisted server-side (the KG + finding store) for this session, so the
+// drawer keeps them after a reload even though the reconstructed transcript drops the
+// structured tool `value`. Merged into `findings()`, deduped against the transcript.
+const [persistedFindings, setPersistedFindings] = createSignal<Finding[]>([])
+/** Reload the session's persisted findings (KG `record_finding` + `add_finding`). */
+export async function refreshPersistedFindings(): Promise<void> {
+  const list = await sessionFindings(sessionId).catch(() => [])
+  setPersistedFindings(
+    list.map((f) => ({
+      title: String(f.title ?? 'finding'),
+      severity: String(f.severity ?? 'info').toLowerCase(),
+      description: f.description || undefined,
+      target: f.target || undefined,
+      mitre: f.mitre || undefined,
+    })),
+  )
+}
 // Drives the live Agents panel (right column). Persisted, open by default.
 const [agentsPanelOpen, setAgentsPanelOpenSignal] = createSignal(readPref<string>('decibel.agentsPanel', 'open') !== 'closed')
 export { agentsPanelOpen }
@@ -328,6 +346,7 @@ export async function openSession(id: string): Promise<void> {
     setActiveSessionId(id)
     setConversation('list', display.map(mapDisplayMsg))
     setContextInfo(null) // meter re-estimates from the loaded transcript
+    void refreshPersistedFindings() // findings the reloaded transcript can't show
     setComposerDraft('') // a draft/image prepared for the old conversation shouldn't leak
     setPendingImage('')
   } catch {
@@ -364,6 +383,7 @@ export function newSession(): void {
   setActiveSessionId(sessionId)
   setConversation('list', [])
   setContextInfo(null)
+  setPersistedFindings([])
   setComposerDraft('')
   setPendingImage('')
   setSessionLoading(false)
@@ -594,6 +614,8 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
     finalizeRunningBlocks()
     // Refresh the composer's context meter with this turn's real prompt size.
     void refreshContext()
+    // Pick up any findings this turn recorded into the KG / finding store.
+    void refreshPersistedFindings()
     // The turn was just persisted server-side; refresh the sidebar's session list.
     if (e.type === 'done') void refreshSessions()
   }
@@ -647,6 +669,15 @@ export function findings(): Finding[] {
     }
   }
   for (const msg of conversation.list) scan(msg.blocks)
+  // Merge server-persisted findings (the KG + finding store) — this is what keeps a
+  // reopened session's findings visible after the transcript dropped its structured
+  // values. Transcript findings win on a dup (they carry the freshest detail).
+  for (const f of persistedFindings()) {
+    const key = `${f.title.toLowerCase()}|${(f.target ?? '').toLowerCase()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(f)
+  }
   // Stable severity sort (critical first); equal severities keep discovery order.
   return out
     .map((f, i) => [f, i] as const)

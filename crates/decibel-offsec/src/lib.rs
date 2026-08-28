@@ -42,6 +42,9 @@ use decibel_tools::ToolRegistry;
 /// The knowledge-graph store handle, re-exported so the app and orchestrator can
 /// open/pass a per-engagement `Db` without a direct `decibel-store` dependency.
 pub use decibel_store::Db;
+/// KG finding reader + row type, re-exported so the app can list the persisted
+/// `record_finding` findings for a session (they survive reload/restart).
+pub use decibel_store::{list_findings as kg_list_findings, Finding as KgFinding};
 
 pub use findings::{AddFindingTool, Finding, FindingStore};
 pub use fs::{ReadFileTool, StrReplaceTool, WriteFileTool};

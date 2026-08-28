@@ -713,6 +713,60 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| e.to_string())
 }
 
+/// One finding for the UI drawer (matches the frontend `Finding`).
+#[derive(Serialize, Clone)]
+struct FindingDto {
+    title: String,
+    severity: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mitre: Option<String>,
+}
+
+/// Every finding recorded for a session, from BOTH sinks: `add_finding` (the
+/// in-memory finding store) and `record_finding` (the persistent knowledge graph,
+/// which survives reload and app restart). The UI merges these with the live
+/// transcript so a reopened session's findings do not vanish.
+#[tauri::command]
+fn session_findings(
+    session_id: String,
+    engagements: State<'_, Engagements>,
+    app: AppHandle,
+) -> Vec<FindingDto> {
+    let (db, findings) = engagement_handles(&engagements, &app, &session_id);
+    let mut out: Vec<FindingDto> = Vec::new();
+    for f in findings.snapshot() {
+        out.push(FindingDto {
+            title: f.title,
+            severity: f.severity,
+            description: Some(f.description).filter(|s| !s.is_empty()),
+            target: f.target,
+            mitre: f.mitre,
+        });
+    }
+    if let Ok(conn) = db.0.lock() {
+        if let Ok(list) = decibel_offsec::kg_list_findings(&conn, "default") {
+            for f in list {
+                let detail: Value = serde_json::from_str(&f.detail_json).unwrap_or(Value::Null);
+                let field = |k: &str| {
+                    detail.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string)
+                };
+                out.push(FindingDto {
+                    title: f.title,
+                    severity: f.severity,
+                    description: field("description"),
+                    target: Some(f.target).filter(|s| !s.is_empty()),
+                    mitre: field("mitre"),
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Drop a conversation's session (a new one starts on the next run). Called by
 /// `/clear` and New Session. An in-flight run/compact holds its own `Arc` clone,
 /// so it finishes on the now-orphaned session while the next run starts fresh.
@@ -1138,6 +1192,7 @@ fn main() {
             compact_session,
             path_is_dir,
             write_text_file,
+            session_findings,
             list_sessions,
             load_session,
             delete_session,
