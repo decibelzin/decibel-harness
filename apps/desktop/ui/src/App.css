@@ -1134,6 +1134,38 @@
   letter-spacing: 0.3px;
   text-transform: uppercase;
 }
+.msg-fb {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+.fb {
+  display: flex;
+  color: var(--text-faint);
+  opacity: 0.45;
+  padding: 3px 5px;
+  border-radius: 6px;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.msg.assistant:hover .fb {
+  opacity: 1;
+}
+.fb:hover {
+  background: var(--surface-2);
+  color: var(--text-muted);
+  opacity: 1;
+}
+.fb.on {
+  opacity: 1;
+}
+.fb.on.up {
+  color: var(--success);
+  background: rgba(52, 199, 118, 0.12);
+}
+.fb.on.down {
+  color: var(--danger);
+  background: rgba(242, 90, 90, 0.12);
+}
 .cursor {
   display: inline-block;
   width: 7px;

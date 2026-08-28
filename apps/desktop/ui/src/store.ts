@@ -279,6 +279,34 @@ export interface Msg {
 }
 
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
+
+// Per-message 👍/👎 feedback, keyed `${sessionId}:${index}` and persisted, so a
+// rating survives reload. Purely a local note (no destination) for now.
+function readFeedback(): Record<string, 'up' | 'down'> {
+  try {
+    const raw = localStorage.getItem('decibel.feedback')
+    const v = raw ? JSON.parse(raw) : {}
+    return v && typeof v === 'object' ? v : {}
+  } catch {
+    return {}
+  }
+}
+const [feedback, setFeedbackStore] = createStore<Record<string, 'up' | 'down' | undefined>>(readFeedback())
+/** The rating for the assistant message at `idx` in the current session, if any. */
+export function feedbackFor(idx: number): 'up' | 'down' | undefined {
+  return feedback[`${sessionId}:${idx}`]
+}
+/** Toggle a message's rating (clicking the active one clears it); persist. */
+export function toggleFeedback(idx: number, v: 'up' | 'down'): void {
+  const key = `${sessionId}:${idx}`
+  const next = feedback[key] === v ? undefined : v
+  setFeedbackStore(key, next)
+  try {
+    localStorage.setItem('decibel.feedback', JSON.stringify(feedback))
+  } catch {
+    /* private mode — rating just won't persist */
+  }
+}
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
 // Drives the Findings drawer (a live, severity-sorted view over the transcript).

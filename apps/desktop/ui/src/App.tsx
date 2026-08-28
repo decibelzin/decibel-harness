@@ -17,6 +17,7 @@ import {
   contextUsage,
   conversation,
   engagementScope,
+  feedbackFor,
   findings,
   findingsOpen,
   goalsOpen,
@@ -43,6 +44,7 @@ import {
   setGoalsOpen,
   setMaxSteps,
   setRemoteExec,
+  toggleFeedback,
   setFindingsOpen,
   setMode,
   setPendingImage,
@@ -148,6 +150,8 @@ const IconSwitch = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points
 const IconFlag = () => svg(<><line x1="5" y1="21" x2="5" y2="3" /><path d="M5 4h12l-2.5 4L17 12H5" /></>, 16)
 const IconAgents = () => svg(<><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0" /><path d="M16 6a3 3 0 0 1 0 6" /><path d="M18.5 20a6 6 0 0 0-3-5.2" /></>, 15)
 const IconTarget = () => svg(<><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="4" /><circle cx="12" cy="12" r="0.6" fill="currentColor" /></>, 15)
+const IconThumbUp = () => svg(<path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1zm3 0 3.5-7a2 2 0 0 1 2 1.5L15 9h4.5a2 2 0 0 1 2 2.4l-1.3 6A2 2 0 0 1 18.2 19H10z" />, 14)
+const IconThumbDown = () => svg(<path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1zm-3 0-3.5 7a2 2 0 0 1-2-1.5L9 15H4.5a2 2 0 0 1-2-2.4l1.3-6A2 2 0 0 1 5.8 5H14z" />, 14)
 
 // ── sidebar ──────────────────────────────────────────────────────────────────
 function Sidebar() {
@@ -1492,7 +1496,7 @@ function Conversation() {
     <div class="conversation" ref={el}>
       <div class="conv-inner">
         <For each={conversation.list}>
-          {(msg) => {
+          {(msg, i) => {
             queueMicrotask(scrollDown)
             return (
               <div class={`msg ${msg.role}`}>
@@ -1506,6 +1510,12 @@ function Conversation() {
                       <For each={msg.blocks}>{(b) => <BlockView block={b} />}</For>
                       <Show when={running() && msg === conversation.list[conversation.list.length - 1]}><span class="cursor" /></Show>
                     </div>
+                    <Show when={msg.blocks.length && !(running() && msg === conversation.list[conversation.list.length - 1])}>
+                      <div class="msg-fb">
+                        <button class={`fb ${feedbackFor(i()) === 'up' ? 'on up' : ''}`} title="Good response" onClick={() => toggleFeedback(i(), 'up')}><IconThumbUp /></button>
+                        <button class={`fb ${feedbackFor(i()) === 'down' ? 'on down' : ''}`} title="Needs work" onClick={() => toggleFeedback(i(), 'down')}><IconThumbDown /></button>
+                      </div>
+                    </Show>
                   </Match>
                   <Match when={msg.role === 'system'}>
                     <div class="sys"><For each={msg.blocks}>{(b) => <BlockView block={b} />}</For></div>
