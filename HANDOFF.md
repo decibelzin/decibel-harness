@@ -154,51 +154,69 @@ forbids reuse — do NOT port from it.**
   `findings()` now reads both finding shapes (`add_finding`'s `value.finding` and
   `record_finding`'s flat `value`), so the primary KG recorder shows in the drawer.
 
-### 2. Findings + reporting
-- **Export a report** from the findings panel (a button → markdown/SARIF via
-  `report_executive` / the store's SARIF renderer; the UI can offer a save).
-- `run_prompt` should return/stream findings as first-class data (pairs with #1's persistence).
+### EXTRA this session (not in the original backlog — user-requested)
+- **Full-arsenal orchestrator** (`b904a60`): `build_engagement` gives the orchestrator
+  `ALL_TOOLS` (shared finding store + persistent KG), prompt rewritten to prefer
+  delegation but consult the KG + `record_finding` (using `findings_added` to avoid
+  duplicate records). Per-agent **token accounting** summed from the specialist sub-session.
+- **Live Agents panel** (`fb381a4`): right-column cockpit — one row per specialist with
+  status, live-ticking duration, steps, findings, tokens; sidebar toggle, click-to-scroll.
+  `cancel()`/`done` finalize running agents (no phantom ticker). `findings()` dedups by (title,target).
+- **Typography** (`6e1bff0`,`403142c`): the **Space family** bundled via `@fontsource`
+  (Space Grotesk UI + Space Mono code), offline. (Not Anthropic's proprietary face — closest free match.)
+- **Tool cards start collapsed** (`dae2e9b`).
 
-### 3. Agent robustness
-- **Automatic compaction** at a token threshold + a tool-result pruner (dsh-style) — today `/compact` is manual only.
-- **Persistent token/usage meter** in the composer (today only `/context` on demand). `max_steps` is now 40 (was 16) but still not user-configurable.
+### 2. Findings + reporting — ✅ DONE (`d2b6341`)
+- Export buttons in the Findings drawer → **Markdown + SARIF** (`ui/src/report.ts`),
+  generated from the deduped `findings()` view, saved via native dialog + `write_text_file`.
+- (Still open, minor) `run_prompt` returning findings as first-class data — the drawer
+  is transcript-derived; a `session_findings(id)` backend read from the KG would also
+  fix #12 (findings on reload). Deferred.
 
-### 4. Expose the Remote-SSH executor in the app
-- `decibel-executor` ships `RemoteExecutor` (drive a real Kali box over SSH — the
-  arsenal without installing anything locally), but the app only runs Local. Add a
-  Settings/engagement path to select a Remote backend (host/user/key) and route
-  `bash`/`shell`/`poc_validate` through it.
+### 3. Agent robustness — ✅ DONE (`4260af9`) (pruner deferred)
+- **Context meter** in the composer (`contextUsage()`), **configurable max_steps**
+  (Settings, 1–200 → `run_prompt` `max_steps` param), **opt-in auto-compaction** (toggle;
+  runs `/compact` at ~80% after a turn). ⚠️ The **tool-result pruner** (dsh-style,
+  truncating old tool outputs in the agent loop) is a deeper `decibel-agent` change — **deferred**.
 
-### 5. Larger parity (F) — not started
-goals · background jobs · **Code Mode** (run_code + SDK) · message feedback.
+### 4. Expose the Remote-SSH executor in the app — **NOT DONE (substantial)**
+- `decibel-executor` ships a Remote SSH backend, but routing the tools through it is a
+  real multi-crate change: **`ShellTool` uses `Command::new` directly** (not the
+  `Executor` abstraction) and the `bash*` tools hold a local `SessionManager`. Scope:
+  (a) rewrite `ShellTool`/exec tools onto `decibel_executor::Executor`, (b) make
+  `SessionManager` backend-aware, (c) thread a `Backend` from `run_prompt` →
+  `register_named`, (d) Settings UI (host/user/**key-file path** — avoid handling the
+  key itself). Do it as a focused session; don't half-wire it.
 
-### 6. Skills corpus + MCP polish
-- **Ship a SKILL.md corpus** — `skills_find`/`skills_load` work but there's no
-  corpus yet (they read `DECIBEL_SKILLS_DIR` or the workspace `skills/` dir; empty
-  = graceful no-op). Author/drop playbooks in.
-- **MCP config isn't auto-synced to the backend on startup** — the persisted server
-  list only reaches `run_prompt` after the user clicks "Connect / test". Wire an
-  auto-connect on app start.
+### 5. Larger parity (F) — **NOT STARTED (large)**
+goals · background jobs · **Code Mode** (`run_code` + a sandboxed SDK) · message feedback.
+Each is its own feature; Code Mode especially. Focused session per item.
 
-### 7. Known debts (all low)
-- Opener plugin for markdown links (may no-op in the webview).
-- Deeper mid-step cancel (the adapter `stream()` takes no cancel token).
-- Review #5: `run_turn` can leave a dangling user message on a first-step error → two consecutive user messages (harmless on DeepSeek/OpenRouter).
-- #3 rename-vs-persist meta.json race; #4 blocking fs IO on the async worker; #12 reopened tool cards lose their structured `value` (show text only).
-- Rename the crate `decibel-openrouter` → `decibel-deepseek`.
+### 6. Skills corpus + MCP polish — ✅ DONE (`163c1af`)
+- **4 SKILL.md playbooks** (reconnaissance, web-exploitation, network-services, reporting)
+  under `apps/desktop/src-tauri/skills/`, bundled as a Tauri resource; `install_skills_corpus()`
+  points `DECIBEL_SKILLS_DIR` at the resource dir (build) or `CARGO_MANIFEST_DIR/skills`
+  (dev). **MCP auto-sync** on startup (`syncMcpToBackend` in `onMount`).
+
+### 7. Known debts (all low) — **NOT DONE**
+- **#12 reopened tool cards lose their `value`** — `ContentBlock::ToolResult` has NO
+  `value` field (only text), so the structured value is never persisted. Fixing it needs
+  value-persistence in the content/event model (deep) OR the drawer reading findings from
+  the persistent KG (`session_findings` command). The higher-value half is the latter.
+- Rename `decibel-openrouter` → `decibel-deepseek` (mechanical but high-churn; every import).
+- Opener plugin for markdown links; deeper mid-step cancel; `run_turn` dangling user
+  message on first-step error; meta.json rename race; blocking fs IO on the async worker.
 
 ---
 
 ## Suggested next-session order
 
-1. §0 (commit fix) and §1 (both follow-ups) are **DONE**. If the §1 commit hasn't
-   run yet, commit the 9 changed files (see the ⚠️ stray-junk note above), then push.
-2. **Findings export** (§2) — a report button on the findings panel (markdown/SARIF
-   via `report_executive` / the store's SARIF renderer). Now that the KG is
-   persistent, this reads real accumulated state. Pairs with returning/streaming
-   findings as first-class data.
-3. **Auto-compaction / usage meter** (§3), then **Remote-SSH in the app** (§4).
-4. Parity (§5) and debts (§7) as capacity allows.
+1. §0/§1/§2/§3/§6 are **DONE + pushed**. The remaining backlog is the *big* stuff.
+2. **§4 Remote-SSH** — the next real feature; scope above. Rewrite `ShellTool` onto the
+   `Executor` first, then thread the backend + Settings UI.
+3. **§7 #12 findings-on-reload** — a `session_findings(id)` command reading the persistent
+   KG, merged into the drawer. Makes findings survive reload/restart (the KG already persists).
+4. **§5 Code Mode** and the rest of parity — focused sessions.
 
 Rebuild = close app + `npm run app`. Keep committing per feature. An adversarial
 review workflow after risky changes has caught real bugs repeatedly.
