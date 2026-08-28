@@ -142,6 +142,36 @@ export async function listMcpServers(): Promise<McpServerConfigDto[]> {
   return []
 }
 
+/** Save generated text (a findings report) to a user-chosen file. In the desktop
+ * app this opens a native save dialog then writes via the backend; in the browser
+ * preview it triggers a normal download. Returns the saved path (or the filename in
+ * preview), or null if the user cancelled. */
+export async function saveExport(defaultName: string, contents: string): Promise<string | null> {
+  if (!isTauri()) {
+    try {
+      const blob = new Blob([contents], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = defaultName
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      return defaultName
+    } catch {
+      return null
+    }
+  }
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const path = await save({ defaultPath: defaultName })
+    if (!path) return null
+    await invoke('write_text_file', { path, contents })
+    return path
+  } catch {
+    return null
+  }
+}
+
 /** Whether `path` is an existing directory (validates a chosen workspace). */
 export async function pathIsDir(path: string): Promise<boolean> {
   if (isTauri()) return await invoke<boolean>('path_is_dir', { path })

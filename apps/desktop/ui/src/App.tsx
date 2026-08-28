@@ -1,8 +1,9 @@
 import { createEffect, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
-import { deleteApiKey, hasApiKey, isTauri, listMcpServers, pathIsDir, pickFolder, saveApiKey, setMcpServers, type McpProbeResult, type ModelInfo, type SessionMeta } from './api'
+import { deleteApiKey, hasApiKey, isTauri, listMcpServers, pathIsDir, pickFolder, saveApiKey, saveExport, setMcpServers, type McpProbeResult, type ModelInfo, type SessionMeta } from './api'
 import { highlightWithin, renderMarkdown } from './markdown'
+import { findingsToMarkdown, findingsToSarif } from './report'
 import {
   access,
   activeSessionId,
@@ -235,6 +236,14 @@ function Sidebar() {
 
 // ── findings drawer (live, severity-sorted view over the transcript) ──────────
 function FindingsPanel() {
+  const stamp = () => new Date().toISOString().slice(0, 10)
+  const exportAs = (fmt: 'md' | 'sarif') => {
+    const list = findings()
+    if (!list.length) return
+    const contents = fmt === 'md' ? findingsToMarkdown(list) : findingsToSarif(list)
+    const name = fmt === 'md' ? `findings-${stamp()}.md` : `findings-${stamp()}.sarif`
+    void saveExport(name, contents)
+  }
   return (
     <div class="modal-backdrop findings-back" onClick={() => setFindingsOpen(false)}>
       <div class="findings-drawer" onClick={(e) => e.stopPropagation()}>
@@ -242,6 +251,10 @@ function FindingsPanel() {
           <span class="fp-ico"><IconFlag /></span>
           <span class="fp-title">Findings</span>
           <span class="fp-count">{findings().length}</span>
+          <Show when={findings().length}>
+            <button class="fp-export" title="Export as Markdown" onClick={() => exportAs('md')}>.md</button>
+            <button class="fp-export" title="Export as SARIF" onClick={() => exportAs('sarif')}>SARIF</button>
+          </Show>
           <button class="x" onClick={() => setFindingsOpen(false)}>✕</button>
         </div>
         <div class="fp-body">

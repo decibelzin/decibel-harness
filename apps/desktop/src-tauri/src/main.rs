@@ -704,6 +704,14 @@ fn path_is_dir(path: String) -> bool {
     !path.trim().is_empty() && std::path::Path::new(path.trim()).is_dir()
 }
 
+/// Write text to a file the user chose in a save dialog — used by the findings
+/// report export. The frontend picks the path (@tauri-apps/plugin-dialog `save`),
+/// then hands it here to persist the generated markdown/SARIF.
+#[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    std::fs::write(&path, contents).map_err(|e| e.to_string())
+}
+
 /// Drop a conversation's session (a new one starts on the next run). Called by
 /// `/clear` and New Session. An in-flight run/compact holds its own `Arc` clone,
 /// so it finishes on the now-orphaned session while the next run starts fresh.
@@ -1107,6 +1115,7 @@ fn main() {
             session_context,
             compact_session,
             path_is_dir,
+            write_text_file,
             list_sessions,
             load_session,
             delete_session,
