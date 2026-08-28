@@ -179,18 +179,27 @@ forbids reuse — do NOT port from it.**
   runs `/compact` at ~80% after a turn). ⚠️ The **tool-result pruner** (dsh-style,
   truncating old tool outputs in the agent loop) is a deeper `decibel-agent` change — **deferred**.
 
-### 4. Expose the Remote-SSH executor in the app — **NOT DONE (substantial)**
-- `decibel-executor` ships a Remote SSH backend, but routing the tools through it is a
-  real multi-crate change: **`ShellTool` uses `Command::new` directly** (not the
-  `Executor` abstraction) and the `bash*` tools hold a local `SessionManager`. Scope:
-  (a) rewrite `ShellTool`/exec tools onto `decibel_executor::Executor`, (b) make
-  `SessionManager` backend-aware, (c) thread a `Backend` from `run_prompt` →
-  `register_named`, (d) Settings UI (host/user/**key-file path** — avoid handling the
-  key itself). Do it as a focused session; don't half-wire it.
+### 4. Remote-SSH executor — ✅ FIRST SLICE DONE (`a0a25c3` + `e07e9ec` review fixes)
+- The **`shell` tool** now routes through a Remote (SSH) `Executor` when configured
+  (Settings → Remote execution: host/port/user/**key-file path**/workspace; no password
+  stored). Threaded through `register_named_with_db(..., remote)` + `build_engagement`
+  (so orchestrate specialists run remote too). Local path (Git Bash + scrub) unchanged.
+- **Coherent by construction**: in remote mode `register_named_with_db` skips the
+  local-host tools (`REMOTE_LOCAL_ONLY`: fs, local-vantage network probes, `bash*`,
+  `poc_validate`) — the agent does ALL host work via the remote `shell`. Remote shell
+  races the cancel token; a missing key file aborts pre-start.
+- ⚠️ The SSH path is compile/logic-verified but **never tested against a real box** here.
+  Follow-up: route `nmap`/`bash*`/fs via SFTP+remote-sessions for a fuller remote arsenal;
+  container backend.
 
-### 5. Larger parity (F) — **NOT STARTED (large)**
-goals · background jobs · **Code Mode** (`run_code` + a sandboxed SDK) · message feedback.
-Each is its own feature; Code Mode especially. Focused session per item.
+### 5. Larger parity (F) — **NOT STARTED (large)** — the only backlog section left
+- **Code Mode** (`run_code` + a sandboxed SDK where the model writes code that calls tools
+  programmatically) — a major standalone feature; needs a design pass first.
+- **background jobs** (long-running tools detached from the turn) — large (async job mgmt).
+- **goals** — an objectives panel; the OPPLAN backend (`add_objective`/`get_objective`/…)
+  already exists, so this is tractable (a read command + a UI panel, like the Agents panel).
+- **message feedback** (👍/👎 on messages) — small UI + optional persistence.
+  Suggested order: goals → message feedback (tractable) → background jobs → Code Mode.
 
 ### 6. Skills corpus + MCP polish — ✅ DONE (`163c1af`)
 - **4 SKILL.md playbooks** (reconnaissance, web-exploitation, network-services, reporting)
@@ -198,11 +207,11 @@ Each is its own feature; Code Mode especially. Focused session per item.
   points `DECIBEL_SKILLS_DIR` at the resource dir (build) or `CARGO_MANIFEST_DIR/skills`
   (dev). **MCP auto-sync** on startup (`syncMcpToBackend` in `onMount`).
 
-### 7. Known debts (all low) — **NOT DONE**
-- **#12 reopened tool cards lose their `value`** — `ContentBlock::ToolResult` has NO
-  `value` field (only text), so the structured value is never persisted. Fixing it needs
-  value-persistence in the content/event model (deep) OR the drawer reading findings from
-  the persistent KG (`session_findings` command). The higher-value half is the latter.
+### 7. Known debts (all low) — **#12 findings-on-reload DONE (`9813e7a`)**
+- ✅ **#12 (the valuable half)**: `session_findings(id)` command reads the persistent KG
+  (`record_finding`) + finding store (`add_finding`); `findings()` merges them so a
+  reopened session's findings survive (the transcript still drops the tool `value`, but
+  the drawer no longer depends on it). Deep value-persistence in the content model = still open.
 - Rename `decibel-openrouter` → `decibel-deepseek` (mechanical but high-churn; every import).
 - Opener plugin for markdown links; deeper mid-step cancel; `run_turn` dangling user
   message on first-step error; meta.json rename race; blocking fs IO on the async worker.
@@ -211,12 +220,15 @@ Each is its own feature; Code Mode especially. Focused session per item.
 
 ## Suggested next-session order
 
-1. §0/§1/§2/§3/§6 are **DONE + pushed**. The remaining backlog is the *big* stuff.
-2. **§4 Remote-SSH** — the next real feature; scope above. Rewrite `ShellTool` onto the
-   `Executor` first, then thread the backend + Settings UI.
-3. **§7 #12 findings-on-reload** — a `session_findings(id)` command reading the persistent
-   KG, merged into the drawer. Makes findings survive reload/restart (the KG already persists).
-4. **§5 Code Mode** and the rest of parity — focused sessions.
+1. §0/§1/§2/§3/§4(slice)/§6/§7#12 are **DONE**. **Only §5 (larger parity) remains** —
+   plus the §4 follow-up (fuller remote arsenal) and the low §7 debts (crate rename, etc.).
+2. **§5, tractable first**: **goals** (OPPLAN objectives panel — the backend tools exist;
+   add a read command + a UI panel like the Agents panel) → **message feedback** (👍/👎).
+3. **§5, large (each its own session)**: **background jobs**, then **Code Mode** (design first:
+   what `run_code` executes + the sandboxed SDK contract).
+4. **§4 follow-up**: route `nmap`/`bash*`/fs remotely (SFTP + remote sessions) for a full
+   remote arsenal; test against a real SSH box (the current slice is compile-verified only).
 
 Rebuild = close app + `npm run app`. Keep committing per feature. An adversarial
-review workflow after risky changes has caught real bugs repeatedly.
+review workflow after risky changes has caught real bugs repeatedly (it caught the §4
+host-coherence bug — the shell-only remote slice mixed local + remote hosts silently).
