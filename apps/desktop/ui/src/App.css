@@ -4,6 +4,9 @@
   height: 100%;
   overflow: hidden;
 }
+.app.agents-open {
+  grid-template-columns: 280px minmax(0, 1fr) 304px;
+}
 
 /* ── sidebar ─────────────────────────────────────────────────────────────── */
 .sidebar {
@@ -1152,6 +1155,158 @@
   color: var(--text-faint);
   font-size: 11px;
   font-family: var(--mono);
+}
+
+/* ── agents panel (live orchestrate cockpit, right column) ─────────────────── */
+.agents {
+  border-left: 1px solid var(--border-subtle);
+  background: var(--sidebar);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.ag-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 14px 8px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.ag-head .ag-ico {
+  color: var(--accent);
+  display: flex;
+}
+.ag-count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.ag-x {
+  margin-left: auto;
+  color: var(--text-faint);
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 17px;
+  line-height: 1.2;
+}
+.ag-x:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.ag-sub {
+  padding: 0 14px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.ag-empty {
+  padding: 6px 14px;
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.ag-empty b {
+  color: var(--text-muted);
+}
+.ag-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 0 8px 10px;
+}
+.ag-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface);
+  margin-bottom: 7px;
+}
+.ag-row:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+.ag-row.running {
+  border-color: rgba(247, 173, 49, 0.4);
+}
+.ag-row.error {
+  border-color: rgba(242, 90, 90, 0.4);
+}
+.ag-row-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ag-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+.ag-dot.running {
+  background: var(--warning);
+  animation: pulse 1s ease-in-out infinite;
+}
+.ag-dot.ok {
+  background: var(--success);
+}
+.ag-dot.error {
+  background: var(--danger);
+}
+.ag-name {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.ag-task {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ag-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.ag-state.running {
+  color: var(--warning);
+}
+.ag-state.ok {
+  color: var(--success);
+}
+.ag-state.error {
+  color: var(--danger);
+}
+.fbadge.live {
+  background: rgba(247, 173, 49, 0.18);
+  color: var(--warning);
 }
 .chip-sm {
   font-family: var(--mono);

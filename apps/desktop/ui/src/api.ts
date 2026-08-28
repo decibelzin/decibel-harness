@@ -30,7 +30,7 @@ export type RunEvent =
   | { type: 'specialist_token'; delegation: number; specialist: string; text: string }
   | { type: 'specialist_tool_call'; delegation: number; specialist: string; name: string; args: string }
   | { type: 'specialist_tool_result'; delegation: number; specialist: string; name: string; ok: boolean; output: string; value: unknown }
-  | { type: 'specialist_end'; delegation: number; specialist: string; ok: boolean; stop: string; steps: number; findings_added: number; summary: string }
+  | { type: 'specialist_end'; delegation: number; specialist: string; ok: boolean; stop: string; steps: number; findings_added: number; tokens: number; summary: string }
   | { type: 'done' }
   | { type: 'error'; message: string }
 
@@ -384,7 +384,7 @@ async function mockOrchestrate(
     value: { recorded: true, finding: { title: 'SSH exposed to the network', severity: 'info', target: '127.0.0.1:22', mitre: 'T1046' } },
   })
 
-  onEvent({ type: 'specialist_end', delegation: d, specialist: 'recon', ok: true, stop: 'completed', steps: 2, findings_added: 1, summary: 'Found SSH (22) and HTTP (80) open; recorded one info finding.' })
+  onEvent({ type: 'specialist_end', delegation: d, specialist: 'recon', ok: true, stop: 'completed', steps: 2, findings_added: 1, tokens: 4210, summary: 'Found SSH (22) and HTTP (80) open; recorded one info finding.' })
   // The `delegate` tool settles with the specialist's returned summary.
   onEvent({
     type: 'tool_result',
@@ -395,6 +395,52 @@ async function mockOrchestrate(
   })
 
   onEvent({ type: 'step', n: 2 })
-  await emitText('\n\nRecon complete. Next I’d delegate exploitation of the exposed HTTP service. \n\n> Mocked orchestrate run — the Tauri build drives the real 17-specialist roster.')
+  await emitText('\n\nRecon done. Delegating web assessment of the HTTP service to `web_operator`.')
+  if (signal?.aborted) return
+
+  // Second delegation — so the agents panel shows more than one lane.
+  const d2 = 1
+  onEvent({ type: 'tool_call', name: 'delegate', args: '{"specialist":"web_operator","task":"Assess the HTTP service on 127.0.0.1:80"}' })
+  onEvent({ type: 'specialist_start', delegation: d2, specialist: 'web_operator', task: 'Assess the HTTP service on 127.0.0.1:80' })
+  await sleep(300)
+  onEvent({ type: 'specialist_step', delegation: d2, specialist: 'web_operator', n: 1 })
+  for (const word of 'Probing the web root and headers for the framework fingerprint.'.split(/(\s+)/)) {
+    if (signal?.aborted) return
+    onEvent({ type: 'specialist_token', delegation: d2, specialist: 'web_operator', text: word })
+    await sleep(14)
+  }
+  onEvent({ type: 'specialist_tool_call', delegation: d2, specialist: 'web_operator', name: 'http_probe', args: '{"url":"http://127.0.0.1/"}' })
+  await sleep(500)
+  onEvent({
+    type: 'specialist_tool_result',
+    delegation: d2,
+    specialist: 'web_operator',
+    name: 'http_probe',
+    ok: true,
+    output: 'http_probe http://127.0.0.1/ → 200\n  server: nginx/1.24.0\n  x-powered-by: Express',
+    value: { status: 200, headers: { server: 'nginx/1.24.0', 'x-powered-by': 'Express' } },
+  })
+  onEvent({ type: 'specialist_tool_call', delegation: d2, specialist: 'web_operator', name: 'record_finding', args: '{"title":"Framework disclosure via X-Powered-By"}' })
+  await sleep(300)
+  onEvent({
+    type: 'specialist_tool_result',
+    delegation: d2,
+    specialist: 'web_operator',
+    name: 'record_finding',
+    ok: true,
+    output: 'record_finding [low] Framework disclosure via X-Powered-By @ http://127.0.0.1/',
+    value: { severity: 'low', title: 'Framework disclosure via X-Powered-By', target: 'http://127.0.0.1/', mitre: 'T1592' },
+  })
+  onEvent({ type: 'specialist_end', delegation: d2, specialist: 'web_operator', ok: true, stop: 'completed', steps: 3, findings_added: 1, tokens: 6820, summary: 'nginx fronting an Express app; recorded a low-severity framework disclosure.' })
+  onEvent({
+    type: 'tool_result',
+    name: 'delegate',
+    ok: true,
+    output: '[web_operator] completed, 3 step(s), 1 finding(s) recorded.\nnginx fronting an Express app; recorded a low-severity framework disclosure.',
+    value: { specialist: 'web_operator', steps: 3, findings_added: 1, stop: 'completed', summary: 'nginx + Express; framework disclosure.' },
+  })
+
+  onEvent({ type: 'step', n: 3 })
+  await emitText('\n\nEngagement summary: 2 findings recorded across recon + web. \n\n> Mocked orchestrate run — the Tauri build drives the real 17-specialist roster.')
   onEvent({ type: 'done' })
 }

@@ -178,6 +178,8 @@ export interface ToolBlock {
  * `blocks` reuse the same Block union as the top-level timeline, so a specialist's
  * tool calls render as real (nmap/http/…) cards inside the delegation. */
 export interface SpecialistRun {
+  /** Session-unique id (stable across turns), for the agents panel + scroll-to. */
+  uid: number
   /** The orchestrator's delegation index — correlates streamed events to this lane. */
   delegation: number
   name: string
@@ -186,6 +188,11 @@ export interface SpecialistRun {
   stop?: string
   steps?: number
   findingsAdded?: number
+  tokens?: number
+  /** Wall-clock timestamps (ms) stamped when the start/end events arrive, so the
+   * agents panel can show each agent's live/elapsed duration. */
+  startedAt?: number
+  endedAt?: number
   /** The specialist's final summary text. Shown only as a fallback when the run
    * streamed no narration (some models don't stream text), since otherwise the
    * streamed tokens already contain it. */
@@ -208,6 +215,13 @@ export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
 // Drives the Findings drawer (a live, severity-sorted view over the transcript).
 export const [findingsOpen, setFindingsOpen] = createSignal(false)
+// Drives the live Agents panel (right column). Persisted, open by default.
+const [agentsPanelOpen, setAgentsPanelOpenSignal] = createSignal(readPref<string>('decibel.agentsPanel', 'open') !== 'closed')
+export { agentsPanelOpen }
+export function setAgentsPanelOpen(open: boolean): void {
+  setAgentsPanelOpenSignal(open)
+  writePref('decibel.agentsPanel', open ? 'open' : 'closed')
+}
 // Drives the composer's model picker so /model can open it from anywhere.
 export const [modelPickerOpen, setModelPickerOpen] = createSignal(false)
 // Opens the workspace-directory picker (from the composer chip or the sidebar).
@@ -348,6 +362,32 @@ export async function send(text: string): Promise<void> {
   }
 }
 
+/** Mark every still-`running` tool block (and any running specialist sub-run and
+ * its nested tools) as terminal. Called on cancel/done so no phantom `running`
+ * agent lingers — otherwise the Agents panel's live-duration ticker never stops,
+ * since the late `specialist_end` for an aborted run is dropped by the runId guard. */
+function finalizeRunningBlocks(): void {
+  setConversation(
+    'list',
+    produce((list: Msg[]) => {
+      for (const msg of list) {
+        for (const b of msg.blocks) {
+          if (b.kind !== 'tool') continue
+          if (b.state === 'running') b.state = 'error'
+          const sr = b.specialist
+          if (sr && sr.state === 'running') {
+            sr.state = 'error'
+            if (sr.endedAt == null) sr.endedAt = Date.now()
+            for (const nb of sr.blocks) {
+              if (nb.kind === 'tool' && nb.state === 'running') nb.state = 'error'
+            }
+          }
+        }
+      }
+    }),
+  )
+}
+
 export function cancel(): void {
   // Drop the active run first so any late events from it are ignored, then abort
   // (which reaches the backend via the api's cancel_run bridge).
@@ -355,6 +395,9 @@ export function cancel(): void {
   controller?.abort()
   controller = undefined
   setRunning(false)
+  // Finalize whatever was mid-flight so the agents panel's ticker stops and no
+  // phantom `running` agent is left behind.
+  finalizeRunningBlocks()
 }
 
 // The prompt-injection shield (backend ShieldPolicy) wraps each tool result's
@@ -376,6 +419,10 @@ function stripUntrusted(s: string): string {
   }
   return s
 }
+
+// Monotonic id for specialist sub-runs, so the agents panel has a stable key +
+// scroll anchor even though `delegation` resets to 0 on each new orchestrate turn.
+let nextAgentUid = 1
 
 /** The nested specialist sub-run for `delegation`, found by reverse-scanning the
  * assistant blocks for its `delegate` card. Returns undefined if not yet started. */
@@ -429,7 +476,15 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
           for (let i = blocks.length - 1; i >= 0; i--) {
             const b = blocks[i]
             if (b.kind === 'tool' && b.name === 'delegate' && b.state === 'running' && !b.specialist) {
-              b.specialist = { delegation: e.delegation, name: e.specialist, task: e.task, state: 'running', blocks: [] }
+              b.specialist = {
+                uid: nextAgentUid++,
+                delegation: e.delegation,
+                name: e.specialist,
+                task: e.task,
+                state: 'running',
+                startedAt: Date.now(),
+                blocks: [],
+              }
               break
             }
           }
@@ -475,7 +530,9 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
             sr.stop = e.stop
             sr.steps = e.steps
             sr.findingsAdded = e.findings_added
+            sr.tokens = e.tokens
             sr.summary = e.summary
+            sr.endedAt = Date.now()
           }
           break
         }
@@ -490,6 +547,9 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
   )
   if (e.type === 'done' || e.type === 'error') {
     setRunning(false)
+    // Defensively finalize any block still `running` at turn end (a specialist that
+    // died without a `specialist_end`), so the agents ticker never runs forever.
+    finalizeRunningBlocks()
     // The turn was just persisted server-side; refresh the sidebar's session list.
     if (e.type === 'done') void refreshSessions()
   }
@@ -514,6 +574,9 @@ function sevRank(s: string): number {
  * `conversation.list` makes it reactive, so the drawer updates as findings land. */
 export function findings(): Finding[] {
   const out: Finding[] = []
+  // Dedup key so the same exposure recorded twice (e.g. a specialist AND the
+  // orchestrator consolidating) shows once. First occurrence wins.
+  const seen = new Set<string>()
   // Scan a block list for finding tool-cards, descending into any nested
   // specialist sub-run so findings recorded inside a delegation surface too.
   const scan = (blocks: Block[]): void => {
@@ -526,13 +589,17 @@ export function findings(): Finding[] {
       const raw = b.value as { finding?: Partial<Finding> } & Partial<Finding> | undefined
       const f = raw && typeof raw === 'object' ? raw.finding ?? raw : undefined
       if (!f) continue
-      out.push({
+      const finding: Finding = {
         title: String(f.title ?? b.output ?? 'finding'),
         severity: String(f.severity ?? 'info').toLowerCase(),
         description: f.description ? String(f.description) : undefined,
         target: f.target ? String(f.target) : undefined,
         mitre: f.mitre ? String(f.mitre) : undefined,
-      })
+      }
+      const key = `${finding.title.toLowerCase()}|${(finding.target ?? '').toLowerCase()}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(finding)
     }
   }
   for (const msg of conversation.list) scan(msg.blocks)
@@ -541,6 +608,20 @@ export function findings(): Finding[] {
     .map((f, i) => [f, i] as const)
     .sort((a, b) => sevRank(a[0].severity) - sevRank(b[0].severity) || a[1] - b[1])
     .map(([f]) => f)
+}
+
+// ── agents (derived live from the transcript) ─────────────────────────────────
+/** Every specialist sub-run in the transcript, in start order — the data behind
+ * the live Agents panel (orchestrate mode). A derived view over `conversation.list`,
+ * so it updates as delegations start, stream, and finish. */
+export function agentRuns(): SpecialistRun[] {
+  const out: SpecialistRun[] = []
+  for (const msg of conversation.list) {
+    for (const b of msg.blocks) {
+      if (b.kind === 'tool' && b.specialist) out.push(b.specialist)
+    }
+  }
+  return out
 }
 
 // ── slash commands ────────────────────────────────────────────────────────────

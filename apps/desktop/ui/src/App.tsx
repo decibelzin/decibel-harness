@@ -1,4 +1,4 @@
-import { createEffect, createSignal, For, Match, onMount, Show, Switch, type JSX } from 'solid-js'
+import { createEffect, createSignal, For, Match, onCleanup, onMount, Show, Switch, type JSX } from 'solid-js'
 
 import './App.css'
 import { deleteApiKey, hasApiKey, isTauri, listMcpServers, pathIsDir, pickFolder, saveApiKey, setMcpServers, type McpProbeResult, type ModelInfo, type SessionMeta } from './api'
@@ -6,6 +6,8 @@ import { highlightWithin, renderMarkdown } from './markdown'
 import {
   access,
   activeSessionId,
+  agentRuns,
+  agentsPanelOpen,
   applyTheme,
   cancel,
   COMMANDS,
@@ -28,6 +30,7 @@ import {
   sessionLoading,
   sessions,
   setAccess,
+  setAgentsPanelOpen,
   setEngagementScope,
   setFindingsOpen,
   setMode,
@@ -212,6 +215,15 @@ function Sidebar() {
           <div class="sess-empty">No saved sessions yet — start one below.</div>
         </Show>
       </div>
+      <button class="findings-btn" onClick={() => setAgentsPanelOpen(!agentsPanelOpen())}>
+        <IconAgents /> Agents
+        <Show when={agentRuns().some((a) => a.state === 'running')}>
+          <span class="fbadge live">{agentRuns().filter((a) => a.state === 'running').length}</span>
+        </Show>
+        <Show when={!agentRuns().some((a) => a.state === 'running') && agentRuns().length}>
+          <span class="fbadge">{agentRuns().length}</span>
+        </Show>
+      </button>
       <button class="findings-btn" onClick={() => setFindingsOpen(true)}>
         <IconFlag /> Findings
         <Show when={findings().length}><span class="fbadge">{findings().length}</span></Show>
@@ -1299,7 +1311,7 @@ function ToolCardView(props: { block: ToolBlock }) {
   const meta = () => toolMeta(props.block.name)
   const label = () => (props.block.state === 'running' ? 'running' : props.block.state === 'ok' ? 'done' : 'error')
   return (
-    <div class={`toolcard ${props.block.state}`}>
+    <div class={`toolcard ${props.block.state}`} id={props.block.specialist ? `agent-${props.block.specialist.uid}` : undefined}>
       <button class="tc-head" onClick={() => setOpen(!open())}>
         <span class="tc-ico">{meta().icon()}</span>
         <span class="tc-name">{meta().label}</span>
@@ -1368,11 +1380,83 @@ function Conversation() {
   )
 }
 
+// ── agents panel (live, orchestrate mode) ─────────────────────────────────────
+function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return `${m}:${String(s % 60).padStart(2, '0')}`
+}
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
+/** The live Agents panel (right column): one row per delegated specialist, with
+ * status, live duration, steps, findings, and tokens — the multi-agent cockpit. */
+function AgentsPanel() {
+  // Tick once a second while any agent is running, so live durations advance.
+  const [nowMs, setNowMs] = createSignal(Date.now())
+  createEffect(() => {
+    if (!agentRuns().some((a) => a.state === 'running')) return
+    setNowMs(Date.now())
+    const id = setInterval(() => setNowMs(Date.now()), 1000)
+    onCleanup(() => clearInterval(id))
+  })
+  const dur = (a: SpecialistRun) => (a.startedAt == null ? 0 : (a.endedAt ?? nowMs()) - a.startedAt)
+  const done = () => agentRuns().filter((a) => a.state !== 'running').length
+  const total = () => agentRuns().reduce((sum, a) => sum + dur(a), 0)
+  const jumpTo = (uid: number) =>
+    document.getElementById(`agent-${uid}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  return (
+    <aside class="agents">
+      <div class="ag-head">
+        <span class="ag-ico"><IconAgents /></span>
+        <span class="ag-title">Agents</span>
+        <Show when={agentRuns().length}><span class="ag-count">{done()}/{agentRuns().length}</span></Show>
+        <button class="ag-x" title="Hide agents panel" onClick={() => setAgentsPanelOpen(false)}>›</button>
+      </div>
+      <Show
+        when={agentRuns().length}
+        fallback={
+          <div class="ag-empty">
+            No agents yet. In <b>orchestrate</b> mode the orchestrator delegates each kill-chain phase
+            to a specialist — they appear here live, with timing and cost.
+          </div>
+        }
+      >
+        <div class="ag-sub">{fmtDuration(total())} total</div>
+        <div class="ag-list">
+          <For each={agentRuns()}>
+            {(a) => (
+              <button class={`ag-row ${a.state}`} onClick={() => jumpTo(a.uid)}>
+                <span class="ag-row-top">
+                  <span class={`ag-dot ${a.state}`} />
+                  <span class="ag-name">{a.name}</span>
+                  <span class="ag-time">{fmtDuration(dur(a))}</span>
+                </span>
+                <Show when={a.task}><span class="ag-task">{a.task}</span></Show>
+                <span class="ag-meta">
+                  <span class={`ag-state ${a.state}`}>{a.state === 'running' ? 'running' : a.stop || a.state}</span>
+                  <Show when={a.steps != null}><span>{a.steps} step{a.steps === 1 ? '' : 's'}</span></Show>
+                  <Show when={a.findingsAdded}><span>{a.findingsAdded} finding{a.findingsAdded === 1 ? '' : 's'}</span></Show>
+                  <Show when={a.tokens}><span>{fmtTokens(a.tokens!)} tok</span></Show>
+                </span>
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+    </aside>
+  )
+}
+
 export default function App() {
   onMount(loadModels)
   const empty = () => conversation.list.length === 0
   return (
-    <div class="app">
+    <div class={`app${agentsPanelOpen() ? ' agents-open' : ''}`}>
       <Sidebar />
       <div class="main">
         <Show
@@ -1395,6 +1479,7 @@ export default function App() {
           </div>
         </Show>
       </div>
+      <Show when={agentsPanelOpen()}><AgentsPanel /></Show>
       <Show when={settingsOpen()}><Settings /></Show>
       <Show when={workspacePanelOpen()}><WorkspacePanel /></Show>
       <Show when={findingsOpen()}><FindingsPanel /></Show>
