@@ -148,6 +148,34 @@ export function setAutoCompact(on: boolean): void {
 }
 
 // ── MCP servers (persisted config list; also synced to the backend) ──────────
+// Remote (SSH) execution config: when enabled with a host, the `shell` tool runs
+// commands on the remote box. `keyPath` is a key-FILE path, not a secret, so it's
+// safe to persist in localStorage.
+export interface RemoteExec {
+  enabled: boolean
+  host: string
+  port?: number
+  user: string
+  keyPath: string
+  workspace?: string
+}
+function readRemote(): RemoteExec {
+  const base: RemoteExec = { enabled: false, host: '', user: '', keyPath: '' }
+  try {
+    const raw = localStorage.getItem('decibel.remote')
+    const v = raw ? JSON.parse(raw) : null
+    return v && typeof v === 'object' ? { ...base, ...v } : base
+  } catch {
+    return base
+  }
+}
+const [remoteExec, setRemoteExecSignal] = createSignal<RemoteExec>(readRemote())
+export { remoteExec }
+export function setRemoteExec(r: RemoteExec): void {
+  setRemoteExecSignal(r)
+  writePref('decibel.remote', JSON.stringify(r))
+}
+
 export interface McpServer {
   name: string
   command: string
@@ -415,7 +443,9 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, workspace(), mode(), access(), engagementScope(), image, maxSteps(), sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    const rc = remoteExec()
+    const remote = rc.enabled && rc.host.trim() ? { host: rc.host, port: rc.port, user: rc.user, keyPath: rc.keyPath, workspace: rc.workspace } : null
+    await runPrompt(prompt, model, provider, workspace(), mode(), access(), engagementScope(), image, maxSteps(), remote, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch

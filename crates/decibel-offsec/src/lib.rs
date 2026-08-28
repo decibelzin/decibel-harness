@@ -45,6 +45,9 @@ pub use decibel_store::Db;
 /// KG finding reader + row type, re-exported so the app can list the persisted
 /// `record_finding` findings for a session (they survive reload/restart).
 pub use decibel_store::{list_findings as kg_list_findings, Finding as KgFinding};
+/// The execution plane, re-exported so the app/orchestrator can build a Remote
+/// (SSH) backend and hand it to `register_named_with_db` / `build_engagement`.
+pub use decibel_executor::{make as make_executor, Backend, Executor};
 
 pub use findings::{AddFindingTool, Finding, FindingStore};
 pub use fs::{ReadFileTool, StrReplaceTool, WriteFileTool};
@@ -138,18 +141,23 @@ pub fn ephemeral_db() -> Db {
 /// registry. Use [`register_named_with_db`] to share a persistent, per-session
 /// graph across turns.
 pub fn register_named(registry: &mut ToolRegistry, names: &[&str], findings: &FindingStore) {
-    register_named_with_db(registry, names, findings, &ephemeral_db());
+    register_named_with_db(registry, names, findings, &ephemeral_db(), None);
 }
 
 /// Like [`register_named`], but the KG/OPPLAN tools share the caller-supplied
 /// `store` — a file-backed, per-engagement `Db` — instead of a freshly minted
 /// in-memory graph. This is how the app makes the knowledge graph and recorded
 /// findings persist across turns (and app restarts).
+///
+/// `remote` selects the execution plane for the `shell` tool: `None` runs commands
+/// on the local host (the default); `Some(executor)` runs them on a Remote (SSH)
+/// backend, so the operator drives a real box's arsenal over SSH.
 pub fn register_named_with_db(
     registry: &mut ToolRegistry,
     names: &[&str],
     findings: &FindingStore,
     store: &Db,
+    remote: Option<Arc<decibel_executor::Executor>>,
 ) {
     // One shared session manager for the whole `bash*` family in this registry, so
     // a session opened by `bash` is visible to bash_output/bash_status/bash_kill.
@@ -157,7 +165,10 @@ pub fn register_named_with_db(
     let sessions = Arc::new(decibel_executor::SessionManager::new("."));
     for name in names {
         match *name {
-            "shell" => registry.register(Arc::new(ShellTool)),
+            "shell" => registry.register(match &remote {
+                Some(executor) => Arc::new(ShellTool::remote(executor.clone())),
+                None => Arc::new(ShellTool::new()),
+            }),
             "nmap" => registry.register(Arc::new(NmapTool)),
             "http" => registry.register(Arc::new(HttpTool)),
             "read_file" => registry.register(Arc::new(ReadFileTool)),

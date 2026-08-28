@@ -34,6 +34,16 @@ export type RunEvent =
   | { type: 'done' }
   | { type: 'error'; message: string }
 
+/** Remote (SSH) execution config. `keyPath` is a path to a private key file (not
+ * the secret). Empty `host` = local execution. */
+export interface RemoteConfig {
+  host: string
+  port?: number
+  user: string
+  keyPath: string
+  workspace?: string
+}
+
 export function isTauri(): boolean {
   const w = window as unknown as { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown }
   return typeof w.__TAURI_INTERNALS__ !== 'undefined' || typeof w.__TAURI__ !== 'undefined'
@@ -85,6 +95,7 @@ export async function runPrompt(
   scope: string,
   image: string,
   maxSteps: number,
+  remote: RemoteConfig | null,
   sessionId: string,
   runId: number,
   onEvent: (e: RunEvent) => void,
@@ -110,6 +121,7 @@ export async function runPrompt(
       scope: scope || null,
       image: image || null,
       maxSteps: maxSteps || null,
+      remote: remote && remote.host.trim() ? remote : null,
       sessionId,
       runId,
       onEvent: channel,

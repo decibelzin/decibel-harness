@@ -70,6 +70,7 @@ async fn main() {
             findings.clone(),
             decibel_offsec::ephemeral_db(),
             None,
+            None,
         );
 
         let mut session = Session::new(format!("engagement-{i}"));

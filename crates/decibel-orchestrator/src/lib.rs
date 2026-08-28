@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use decibel_agent::{run_turn_observed, AgentConfig, Progress, StopReason};
 use decibel_core::{EventKind, Session};
 use decibel_llm::{ContentBlock, LlmAdapter, Message, ToolSchema};
-use decibel_offsec::{register_named_with_db, Db, FindingStore, ALL_TOOLS};
+use decibel_offsec::{register_named_with_db, Db, Executor, FindingStore, ALL_TOOLS};
 use decibel_tools::{ExecCtx, Tool, ToolError, ToolRegistry};
 use serde_json::{json, Value};
 
@@ -134,6 +134,9 @@ pub struct SubagentTool {
     /// The shared, (persistent) knowledge-graph store every specialist records
     /// into, so KG nodes/edges/findings accumulate across delegations.
     store: Db,
+    /// Optional Remote (SSH) execution plane — when set, every specialist's `shell`
+    /// runs on the remote host, like the orchestrator's.
+    remote: Option<Arc<Executor>>,
     specialists: Vec<Specialist>,
     max_tokens: u64,
     /// Optional sink for the specialist's live progress (a nested UI timeline);
@@ -151,6 +154,7 @@ impl SubagentTool {
         model: impl Into<String>,
         findings: FindingStore,
         store: Db,
+        remote: Option<Arc<Executor>>,
         specialists: Vec<Specialist>,
         max_tokens: u64,
         sink: Option<SpecialistSink>,
@@ -160,6 +164,7 @@ impl SubagentTool {
             model: model.into(),
             findings,
             store,
+            remote,
             specialists,
             max_tokens,
             sink,
@@ -232,6 +237,7 @@ self-contained task — the specialist does not see this conversation.",
             &specialist.tools.iter().map(String::as_str).collect::<Vec<_>>(),
             &self.findings,
             &self.store,
+            self.remote.clone(),
         );
 
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
@@ -355,6 +361,7 @@ pub fn build_engagement(
     max_tokens: u64,
     findings: FindingStore,
     store: Db,
+    remote: Option<Arc<Executor>>,
     sink: Option<SpecialistSink>,
 ) -> ToolRegistry {
     let specialists = default_specialists();
@@ -364,6 +371,7 @@ pub fn build_engagement(
         model,
         findings.clone(),
         store.handle(),
+        remote.clone(),
         specialists,
         max_tokens,
         sink,
@@ -373,7 +381,7 @@ pub fn build_engagement(
     // a quick check itself, and consolidate findings via record_finding — never
     // stuck without a tool. It still prefers `delegate` for multi-step phases (see
     // `orchestrator_system`), keeping each phase's context isolated.
-    register_named_with_db(&mut registry, ALL_TOOLS, &findings, &store);
+    register_named_with_db(&mut registry, ALL_TOOLS, &findings, &store, remote);
     registry
 }
 
@@ -423,6 +431,7 @@ mod tests {
             FindingStore::new(),
             decibel_offsec::ephemeral_db(),
             None,
+            None,
         );
         let names: Vec<String> = registry.schemas().into_iter().map(|s| s.name).collect();
         assert!(names.contains(&"delegate".to_string()));
@@ -437,6 +446,7 @@ mod tests {
             "m",
             findings.clone(),
             decibel_offsec::ephemeral_db(),
+            None,
             default_specialists(),
             500,
             None,
@@ -457,6 +467,7 @@ mod tests {
             "m",
             FindingStore::new(),
             decibel_offsec::ephemeral_db(),
+            None,
             default_specialists(),
             500,
             None,
@@ -476,6 +487,7 @@ mod tests {
             "m",
             FindingStore::new(),
             decibel_offsec::ephemeral_db(),
+            None,
             default_specialists(),
             500,
             Some(sink),

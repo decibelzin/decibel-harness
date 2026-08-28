@@ -4,9 +4,11 @@
 //! spawning, whole-tree kill on timeout/cancel, and secret-env scrubbing live
 //! in [`crate::proc`], shared with the `nmap` tool.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use decibel_executor::{ExecRequest, Executor};
 use decibel_llm::{ContentBlock, ToolSchema};
 use decibel_tools::{ExecCtx, Tool, ToolError};
 use serde_json::{json, Value};
@@ -21,7 +23,28 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_STREAM_BYTES: usize = 60_000;
 
 /// Run a shell command and return its captured output and exit status.
-pub struct ShellTool;
+///
+/// With no `remote` executor the command runs on the local host (Git Bash on
+/// Windows, `sh` on Unix), with secret-env scrubbing and whole-tree timeout/cancel.
+/// When a **Remote (SSH)** backend is configured, the command runs on that host
+/// instead — the operator drives a real box's arsenal without installing anything
+/// locally.
+#[derive(Default)]
+pub struct ShellTool {
+    remote: Option<Arc<Executor>>,
+}
+
+impl ShellTool {
+    /// A local-execution shell tool (the default).
+    pub fn new() -> Self {
+        ShellTool { remote: None }
+    }
+
+    /// A shell tool that runs its commands on a remote executor (SSH).
+    pub fn remote(executor: Arc<Executor>) -> Self {
+        ShellTool { remote: Some(executor) }
+    }
+}
 
 /// Locate a POSIX shell to prefer on Windows (Git Bash), so the model's
 /// Linux-style command lines (pipes, `;`, `2>/dev/null`, heredocs, inline
@@ -102,7 +125,30 @@ impl Tool for ShellTool {
     async fn execute(&self, arguments: Value, ctx: &ExecCtx) -> Result<Value, ToolError> {
         let command = arg_str(&arguments, "command")?;
         let workdir = arg_str_opt(&arguments, "workdir");
-        let timeout = Duration::from_millis(arg_u64_opt(&arguments, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS));
+        let timeout_ms = arg_u64_opt(&arguments, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS);
+        let timeout = Duration::from_millis(timeout_ms);
+
+        // Remote (SSH) backend: run the command on the remote host and map its
+        // result into the same shape as a local run.
+        if let Some(executor) = &self.remote {
+            let mut req = ExecRequest::new(&command).timeout_ms(timeout_ms);
+            if let Some(dir) = &workdir {
+                req = req.cwd(dir.clone());
+            }
+            let r = executor.exec(req).await.map_err(ToolError::execution)?;
+            let (stdout, out_cut) = truncate_bytes(&r.stdout, MAX_STREAM_BYTES);
+            let (stderr, err_cut) = truncate_bytes(&r.stderr, MAX_STREAM_BYTES);
+            return Ok(json!({
+                "exit_code": r.exit_code,
+                "signal": Value::Null,
+                "stdout": stdout,
+                "stderr": stderr,
+                "timed_out": r.timed_out,
+                "stdout_truncated": out_cut || r.truncated,
+                "stderr_truncated": err_cut,
+                "remote": true,
+            }));
+        }
 
         let mut cmd = shell_command(&command);
         // An explicit workdir wins (resolved against the workspace like every other
@@ -166,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn runs_a_command_and_captures_output() {
-        let tool = ShellTool;
+        let tool = ShellTool::new();
         let value = tool
             .execute(json!({ "command": "echo hello" }), &ExecCtx::new())
             .await
@@ -179,7 +225,7 @@ mod tests {
     #[tokio::test]
     async fn secret_env_is_not_visible_to_the_child() {
         std::env::set_var("DECIBEL_TEST_SECRET_TOKEN", "leak-me");
-        let tool = ShellTool;
+        let tool = ShellTool::new();
         let cmd = if cfg!(windows) {
             "echo [%DECIBEL_TEST_SECRET_TOKEN%]"
         } else {
@@ -193,7 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn times_out_a_long_command() {
-        let tool = ShellTool;
+        let tool = ShellTool::new();
         let cmd = if cfg!(windows) {
             "ping -n 4 127.0.0.1 > NUL"
         } else {

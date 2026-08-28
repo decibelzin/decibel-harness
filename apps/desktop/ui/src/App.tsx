@@ -27,6 +27,7 @@ import {
   openSession,
   pendingImage,
   refreshSessions,
+  remoteExec,
   removeSession,
   renameSessionTitle,
   runSlashCommand,
@@ -38,6 +39,7 @@ import {
   setAutoCompact,
   setEngagementScope,
   setMaxSteps,
+  setRemoteExec,
   setFindingsOpen,
   setMode,
   setPendingImage,
@@ -494,6 +496,32 @@ function GeneralTab() {
         <button class={`switch ${autoCompact() ? 'on' : ''}`} role="switch" aria-checked={autoCompact()} onClick={() => setAutoCompact(!autoCompact())}>
           <span class="knob" />
         </button>
+      </div>
+      <div class="setting">
+        <div class="setting row" style={{ 'margin-bottom': '10px' }}>
+          <div>
+            <div class="field-label">Remote execution (SSH)</div>
+            <div class="field-help">Run the <code>shell</code> tool on a remote host (e.g. a Kali box) over SSH instead of locally — drive its arsenal without installing anything here. Other tools stay local. Auth is a private-key <b>file path</b> (no password is stored).</div>
+          </div>
+          <button
+            class={`switch ${remoteExec().enabled ? 'on' : ''}`}
+            role="switch"
+            aria-checked={remoteExec().enabled}
+            onClick={() => setRemoteExec({ ...remoteExec(), enabled: !remoteExec().enabled })}
+          >
+            <span class="knob" />
+          </button>
+        </div>
+        <Show when={remoteExec().enabled}>
+          <div class="remote-grid">
+            <input class="remote-in" placeholder="host or IP" value={remoteExec().host} onInput={(e) => setRemoteExec({ ...remoteExec(), host: e.currentTarget.value })} />
+            <input class="remote-in" type="number" placeholder="port 22" value={remoteExec().port ?? ''} onInput={(e) => setRemoteExec({ ...remoteExec(), port: parseInt(e.currentTarget.value, 10) || undefined })} />
+            <input class="remote-in" placeholder="user" value={remoteExec().user} onInput={(e) => setRemoteExec({ ...remoteExec(), user: e.currentTarget.value })} />
+            <input class="remote-in remote-wide" placeholder="private key file path (e.g. C:\\Users\\you\\.ssh\\id_ed25519)" value={remoteExec().keyPath} onInput={(e) => setRemoteExec({ ...remoteExec(), keyPath: e.currentTarget.value })} />
+            <input class="remote-in remote-wide" placeholder="remote workspace dir (optional)" value={remoteExec().workspace ?? ''} onInput={(e) => setRemoteExec({ ...remoteExec(), workspace: e.currentTarget.value || undefined })} />
+          </div>
+          <div class="field-help" style={{ 'margin-top': '8px' }}>Uses an unencrypted key file (or one your ssh-agent holds). A connection/build error aborts the run rather than silently running locally.</div>
+        </Show>
       </div>
       <div class="setting">
         <div class="field-label">Authority</div>

@@ -279,6 +279,22 @@ fn scope_to_json(raw: &str) -> String {
     serde_json::json!({ "targets": targets }).to_string()
 }
 
+/// Remote (SSH) execution config from the frontend (Settings → Remote execution).
+/// `key_path` is a path to a private key FILE (not the secret itself); no password
+/// or passphrase is accepted, so no plaintext credential lives in the app.
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RemoteDto {
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    user: String,
+    #[serde(default)]
+    key_path: String,
+    #[serde(default)]
+    workspace: Option<String>,
+}
+
 /// One model as the picker needs it (matches the frontend `ModelInfo`).
 #[derive(Serialize, Clone)]
 struct ModelDto {
@@ -466,6 +482,7 @@ async fn run_prompt(
     scope: Option<String>,
     image: Option<String>,
     max_steps: Option<u32>,
+    remote: Option<RemoteDto>,
     session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
@@ -508,6 +525,32 @@ async fn run_prompt(
     // for this turn write into a store that outlives the turn — the knowledge graph
     // and recorded findings accumulate instead of resetting each turn.
     let (db, findings) = engagement_handles(&engagements, &app, &session_id);
+    // Remote (SSH) execution plane: when the operator configured a Remote backend,
+    // the `shell` tool runs commands on that host instead of locally — driving a
+    // real box's arsenal over SSH. A build error (e.g. missing key file) aborts the
+    // run rather than silently falling back to local (the target was chosen remote).
+    let remote_exec: Option<Arc<decibel_offsec::Executor>> = match remote.filter(|r| !r.host.trim().is_empty()) {
+        Some(r) => {
+            let backend = decibel_offsec::Backend::Remote {
+                host: r.host,
+                port: r.port,
+                user: r.user,
+                workspace: r.workspace.filter(|s| !s.trim().is_empty()),
+                password: None,
+                key_path: Some(r.key_path).filter(|s| !s.trim().is_empty()),
+                passphrase: None,
+            };
+            match decibel_offsec::make_executor(backend) {
+                Ok(e) => Some(Arc::new(e)),
+                Err(e) => {
+                    let _ = on_event.send(RunEvt::Error { message: format!("Remote execution: {e}") });
+                    let _ = on_event.send(RunEvt::Done);
+                    return Ok(());
+                }
+            }
+        }
+        None => None,
+    };
     let mut registry = ToolRegistry::new();
     if orchestrate {
         // Forward each specialist's live progress to the UI as a nested timeline
@@ -518,10 +561,10 @@ async fn run_prompt(
                 let _ = out.send(specialist_evt(ev));
             })
         };
-        registry = build_engagement(adapter.clone(), model.clone(), 1200, findings.clone(), db.handle(), Some(sink));
+        registry = build_engagement(adapter.clone(), model.clone(), 1200, findings.clone(), db.handle(), remote_exec.clone(), Some(sink));
     } else if !plan {
         let names: &[&str] = if access == "readonly" { READONLY_TOOLS } else { ALL_TOOLS };
-        register_named_with_db(&mut registry, names, &findings, &db);
+        register_named_with_db(&mut registry, names, &findings, &db, remote_exec.clone());
     }
 
     // Safety envelope for any EXECUTING run (act, read-only, and orchestrate —

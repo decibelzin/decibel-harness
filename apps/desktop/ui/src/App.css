@@ -410,6 +410,30 @@
 .scope-input:focus {
   border-color: var(--accent);
 }
+/* remote (SSH) execution fields */
+.remote-grid {
+  display: grid;
+  grid-template-columns: 1fr 90px 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+.remote-in {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  font-family: var(--mono);
+  outline: none;
+  min-width: 0;
+}
+.remote-in:focus {
+  border-color: var(--accent);
+}
+.remote-wide {
+  grid-column: 1 / -1;
+}
 .num-input {
   flex-shrink: 0;
   width: 76px;
