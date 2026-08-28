@@ -1,5 +1,9 @@
 import { render } from 'solid-js/web'
 
+// Bundled variable fonts (offline, no FOUC): Space Grotesk for UI, JetBrains Mono
+// for code — a clean, consistent look on every OS instead of the platform default.
+import '@fontsource-variable/space-grotesk'
+import '@fontsource-variable/jetbrains-mono'
 import './theme.css'
 import App from './App'
 import { applyTheme, theme } from './store'

@@ -24,8 +24,8 @@
 
   --radius: 14px;
   --radius-sm: 8px;
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
+  --sans: "Space Grotesk Variable", "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
   /* syntax-highlight palette (dark); the light theme overrides these below */
   --code-kw: rgb(198, 149, 246);
@@ -119,7 +119,13 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.55;
+  /* Space Grotesk is a touch wide; a small negative tracking tightens the UI, and
+     tabular figures keep numbers (ports, durations, tokens) aligned in columns. */
+  letter-spacing: -0.01em;
+  font-feature-settings: 'tnum' 1;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 button {
