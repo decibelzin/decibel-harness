@@ -10,6 +10,7 @@
 //! [`register_all`] installs the whole toolkit into a [`ToolRegistry`] and
 //! returns the shared [`FindingStore`] the app reads to build a report.
 
+pub mod code;
 pub mod findings;
 pub mod fs;
 pub mod http;
@@ -52,6 +53,7 @@ pub use decibel_store::opplan::{list_objectives as kg_list_objectives, Objective
 /// (SSH) backend and hand it to `register_named_with_db` / `build_engagement`.
 pub use decibel_executor::{make as make_executor, Backend, Executor};
 
+pub use code::RunCodeTool;
 pub use findings::{AddFindingTool, Finding, FindingStore};
 pub use fs::{ReadFileTool, StrReplaceTool, WriteFileTool};
 pub use http::HttpTool;
@@ -98,7 +100,7 @@ pub use skills::{SkillsFindTool, SkillsLoadTool};
 
 /// Every tool name the toolkit provides, in registration order.
 pub const ALL_TOOLS: &[&str] = &[
-    "shell", "nmap", "http", "read_file", "write_file", "str_replace", "glob", "grep", "add_finding",
+    "shell", "run_code", "nmap", "http", "read_file", "write_file", "str_replace", "glob", "grep", "add_finding",
     // Pure web/auth analyzers (offline, no deps) — ported from Decepticon's tools/web.
     "jwt_parse", "jwt_forge", "jwt_crack", "cookie_audit", "oauth_audit", "graphql_plan",
     // Pure cloud analyzers (offline) — Decepticon tools/cloud.
@@ -194,6 +196,10 @@ pub fn register_named_with_db(
             "shell" => registry.register(match &remote {
                 Some(executor) => Arc::new(ShellTool::remote(executor.clone())),
                 None => Arc::new(ShellTool::new()),
+            }),
+            "run_code" => registry.register(match &remote {
+                Some(executor) => Arc::new(RunCodeTool::remote(executor.clone())),
+                None => Arc::new(RunCodeTool::new()),
             }),
             "nmap" => registry.register(Arc::new(NmapTool)),
             "http" => registry.register(Arc::new(HttpTool)),

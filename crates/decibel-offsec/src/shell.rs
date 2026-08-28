@@ -96,6 +96,62 @@ fn shell_command(command: &str) -> Command {
     }
 }
 
+/// Run a shell `command` on the configured backend — the local host, or a Remote
+/// (SSH) executor when `remote` is set — and return the canonical
+/// `{exit_code, stdout, stderr, timed_out, …}` value. Shared by the `shell` and
+/// `run_code` tools. The remote path races the cancel token so Stop returns promptly.
+pub(crate) async fn run_shell(
+    remote: &Option<Arc<Executor>>,
+    command: &str,
+    workdir: Option<&str>,
+    timeout_ms: u64,
+    ctx: &ExecCtx,
+) -> Result<Value, ToolError> {
+    if let Some(executor) = remote {
+        let mut req = ExecRequest::new(command).timeout_ms(timeout_ms);
+        if let Some(dir) = workdir {
+            req = req.cwd(dir.to_string());
+        }
+        let r = tokio::select! {
+            biased;
+            _ = ctx.token().cancelled() => return Err(ToolError::Aborted),
+            out = executor.exec(req) => out.map_err(ToolError::execution)?,
+        };
+        let (stdout, out_cut) = truncate_bytes(&r.stdout, MAX_STREAM_BYTES);
+        let (stderr, err_cut) = truncate_bytes(&r.stderr, MAX_STREAM_BYTES);
+        return Ok(json!({
+            "exit_code": r.exit_code,
+            "signal": Value::Null,
+            "stdout": stdout,
+            "stderr": stderr,
+            "timed_out": r.timed_out,
+            "stdout_truncated": out_cut || r.truncated,
+            "stderr_truncated": err_cut,
+            "remote": true,
+        }));
+    }
+    let mut cmd = shell_command(command);
+    // An explicit workdir wins (resolved against the workspace like every other tool
+    // path); otherwise fall back to the session workspace itself.
+    if let Some(dir) = workdir {
+        cmd.current_dir(ctx.resolve(dir));
+    } else if let Some(cwd) = ctx.cwd() {
+        cmd.current_dir(cwd);
+    }
+    let result = run_command(cmd, Duration::from_millis(timeout_ms), ctx).await?;
+    let (stdout, out_cut) = truncate_bytes(&result.stdout, MAX_STREAM_BYTES);
+    let (stderr, err_cut) = truncate_bytes(&result.stderr, MAX_STREAM_BYTES);
+    Ok(json!({
+        "exit_code": result.exit_code,
+        "signal": result.signal,
+        "stdout": stdout,
+        "stderr": stderr,
+        "timed_out": result.timed_out,
+        "stdout_truncated": out_cut,
+        "stderr_truncated": err_cut,
+    }))
+}
+
 #[async_trait]
 impl Tool for ShellTool {
     fn name(&self) -> &str {
@@ -136,58 +192,7 @@ impl Tool for ShellTool {
         let command = arg_str(&arguments, "command")?;
         let workdir = arg_str_opt(&arguments, "workdir");
         let timeout_ms = arg_u64_opt(&arguments, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS);
-        let timeout = Duration::from_millis(timeout_ms);
-
-        // Remote (SSH) backend: run the command on the remote host and map its
-        // result into the same shape as a local run. Race the exec against the
-        // cancellation token so Stop returns promptly (the remote process may linger
-        // — SSH gives no reliable kill — but the turn is not blocked).
-        if let Some(executor) = &self.remote {
-            let mut req = ExecRequest::new(&command).timeout_ms(timeout_ms);
-            if let Some(dir) = &workdir {
-                req = req.cwd(dir.clone());
-            }
-            let r = tokio::select! {
-                biased;
-                _ = ctx.token().cancelled() => return Err(ToolError::Aborted),
-                out = executor.exec(req) => out.map_err(ToolError::execution)?,
-            };
-            let (stdout, out_cut) = truncate_bytes(&r.stdout, MAX_STREAM_BYTES);
-            let (stderr, err_cut) = truncate_bytes(&r.stderr, MAX_STREAM_BYTES);
-            return Ok(json!({
-                "exit_code": r.exit_code,
-                "signal": Value::Null,
-                "stdout": stdout,
-                "stderr": stderr,
-                "timed_out": r.timed_out,
-                "stdout_truncated": out_cut || r.truncated,
-                "stderr_truncated": err_cut,
-                "remote": true,
-            }));
-        }
-
-        let mut cmd = shell_command(&command);
-        // An explicit workdir wins (resolved against the workspace like every other
-        // tool path); otherwise fall back to the session workspace itself.
-        if let Some(dir) = &workdir {
-            cmd.current_dir(ctx.resolve(dir));
-        } else if let Some(cwd) = ctx.cwd() {
-            cmd.current_dir(cwd);
-        }
-        let result = run_command(cmd, timeout, ctx).await?;
-
-        let (stdout, out_cut) = truncate_bytes(&result.stdout, MAX_STREAM_BYTES);
-        let (stderr, err_cut) = truncate_bytes(&result.stderr, MAX_STREAM_BYTES);
-
-        Ok(json!({
-            "exit_code": result.exit_code,
-            "signal": result.signal,
-            "stdout": stdout,
-            "stderr": stderr,
-            "timed_out": result.timed_out,
-            "stdout_truncated": out_cut,
-            "stderr_truncated": err_cut,
-        }))
+        run_shell(&self.remote, &command, workdir.as_deref(), timeout_ms, ctx).await
     }
 
     fn render(&self, _arguments: &Value, value: &Value) -> Vec<ContentBlock> {

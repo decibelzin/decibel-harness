@@ -140,6 +140,7 @@ const IconSend = () => svg(<><line x1="12" y1="19" x2="12" y2="5" /><polyline po
 const IconMode = () => svg(<><path d="M4 12a8 8 0 0 1 14-5" /><polyline points="18 3 18 7 14 7" /><path d="M20 12a8 8 0 0 1-14 5" /><polyline points="6 21 6 17 10 17" /></>, 15)
 // tool-card glyphs
 const IconTerminal = () => svg(<><polyline points="5 8 9 12 5 16" /><line x1="12" y1="16" x2="18" y2="16" /></>, 15)
+const IconCode = () => svg(<><polyline points="8 6 3 12 8 18" /><polyline points="16 6 21 12 16 18" /></>, 15)
 const IconFile = () => svg(<><path d="M6 3h8l4 4v14H6z" /><polyline points="14 3 14 7 18 7" /></>, 15)
 const IconEdit = () => svg(<><path d="M4 20h4l10-10-4-4L4 16z" /><line x1="13" y1="6" x2="17" y2="10" /></>, 15)
 const IconNet = () => svg(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18" /></>, 15)
@@ -1205,6 +1206,7 @@ interface ToolMeta {
 function toolMeta(name: string): ToolMeta {
   switch (name) {
     case 'shell': return { label: 'shell', icon: IconTerminal }
+    case 'run_code': return { label: 'run_code', icon: IconCode }
     case 'nmap': return { label: 'nmap', icon: IconNet }
     case 'http': return { label: 'http', icon: IconGlobe }
     case 'read_file': return { label: 'read_file', icon: IconFile }
@@ -1224,6 +1226,7 @@ function argSummary(block: ToolBlock): string {
   const s = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : String(v))
   switch (block.name) {
     case 'shell': return s(a.command)
+    case 'run_code': return `${s(a.language)} · ${s(a.code).split('\n')[0].slice(0, 60)}`
     case 'nmap': return s(a.target)
     case 'http': return `${s(a.method || 'GET').toUpperCase()} ${s(a.url)}`.trim()
     case 'read_file':
@@ -1426,7 +1429,7 @@ function ToolBody(props: { block: ToolBlock }) {
     <Show when={props.block.state !== 'running'} fallback={<div class="tc-running"><span class="rdot" />working…</div>}>
       <Switch fallback={<GenericBody block={props.block} />}>
         <Match when={props.block.state === 'error'}><pre class="term err">{props.block.output || 'error'}</pre></Match>
-        <Match when={props.block.name === 'shell'}><ShellBody block={props.block} /></Match>
+        <Match when={props.block.name === 'shell' || props.block.name === 'run_code'}><ShellBody block={props.block} /></Match>
         <Match when={props.block.name === 'nmap'}><NmapBody block={props.block} /></Match>
         <Match when={props.block.name === 'http'}><HttpBody block={props.block} /></Match>
         <Match when={props.block.name === 'read_file'}><ReadBody block={props.block} /></Match>
