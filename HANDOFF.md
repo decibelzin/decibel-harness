@@ -192,14 +192,16 @@ forbids reuse — do NOT port from it.**
   Follow-up: route `nmap`/`bash*`/fs via SFTP+remote-sessions for a fuller remote arsenal;
   container backend.
 
-### 5. Larger parity (F) — **NOT STARTED (large)** — the only backlog section left
-- **Code Mode** (`run_code` + a sandboxed SDK where the model writes code that calls tools
-  programmatically) — a major standalone feature; needs a design pass first.
-- **background jobs** (long-running tools detached from the turn) — large (async job mgmt).
-- **goals** — an objectives panel; the OPPLAN backend (`add_objective`/`get_objective`/…)
-  already exists, so this is tractable (a read command + a UI panel, like the Agents panel).
-- **message feedback** (👍/👎 on messages) — small UI + optional persistence.
-  Suggested order: goals → message feedback (tractable) → background jobs → Code Mode.
+### 5. Larger parity (F) — **tractable half DONE; two large items left**
+- ✅ **goals** (`a552c3e`) — a **Goals drawer** (sidebar button, like Findings) surfaces the
+  OPPLAN objective tree via `session_objectives(id)` (reads the KG `list_objectives`): status
+  pills, phase, parent nesting, priority order; refreshed on load + after each turn.
+- ✅ **message feedback** (`2d41a93`) — subtle 👍/👎 on completed assistant messages, keyed
+  `${sessionId}:${index}` and persisted to localStorage (a local note; no destination yet).
+- ❌ **background jobs** (long-running tools detached from the turn) — large (async job mgmt).
+- ❌ **Code Mode** (`run_code` + a sandboxed SDK where the model writes code that calls tools
+  programmatically) — a major standalone feature; **needs a design pass first** (what does
+  `run_code` execute, what's the SDK/tool-call contract, what's the sandbox). Do it alone.
 
 ### 6. Skills corpus + MCP polish — ✅ DONE (`163c1af`)
 - **4 SKILL.md playbooks** (reconnaissance, web-exploitation, network-services, reporting)
@@ -220,13 +222,12 @@ forbids reuse — do NOT port from it.**
 
 ## Suggested next-session order
 
-1. §0/§1/§2/§3/§4(slice)/§6/§7#12 are **DONE**. **Only §5 (larger parity) remains** —
-   plus the §4 follow-up (fuller remote arsenal) and the low §7 debts (crate rename, etc.).
-2. **§5, tractable first**: **goals** (OPPLAN objectives panel — the backend tools exist;
-   add a read command + a UI panel like the Agents panel) → **message feedback** (👍/👎).
-3. **§5, large (each its own session)**: **background jobs**, then **Code Mode** (design first:
-   what `run_code` executes + the sandboxed SDK contract).
-4. **§4 follow-up**: route `nmap`/`bash*`/fs remotely (SFTP + remote sessions) for a full
+1. §0–§4(slice), §6, §7#12, and §5's tractable half (goals + feedback) are **DONE**. What's
+   left is only the *large* items: **§5 background jobs + Code Mode**, the **§4 follow-up**
+   (fuller remote arsenal), and the low **§7 debts** (crate rename, etc.).
+2. **§5 large (each its own session)**: **background jobs**, then **Code Mode** — design first
+   (what `run_code` executes + the sandboxed SDK/tool-call contract + the sandbox).
+3. **§4 follow-up**: route `nmap`/`bash*`/fs remotely (SFTP + remote sessions) for a full
    remote arsenal; test against a real SSH box (the current slice is compile-verified only).
 
 Rebuild = close app + `npm run app`. Keep committing per feature. An adversarial
