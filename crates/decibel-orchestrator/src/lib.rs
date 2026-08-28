@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use decibel_agent::{run_turn_observed, AgentConfig, Progress, StopReason};
-use decibel_core::Session;
+use decibel_core::{EventKind, Session};
 use decibel_llm::{ContentBlock, LlmAdapter, Message, ToolSchema};
-use decibel_offsec::{register_named_with_db, Db, FindingStore};
+use decibel_offsec::{register_named_with_db, Db, FindingStore, ALL_TOOLS};
 use decibel_tools::{ExecCtx, Tool, ToolError, ToolRegistry};
 use serde_json::{json, Value};
 
@@ -54,6 +54,8 @@ pub enum SpecialistEvent {
         stop: String,
         steps: u64,
         findings_added: usize,
+        /// Total tokens (input + output) the specialist's turn consumed.
+        tokens: u64,
         summary: String,
     },
 }
@@ -106,14 +108,21 @@ pub fn orchestrator_system() -> String {
         .join(", ");
     format!(
         "You are the ORCHESTRATOR of an authorized red-team engagement, operating with the user's \
-permission on systems they own or may test. Break the objective into kill-chain phases and \
-delegate each to a specialist with the `delegate` tool. Available specialists, in kill-chain \
-order: {roster}. Delegate reconnaissance FIRST (`recon`/`osint_operator`), then pass its concrete \
-results into the exploitation and post-exploitation phases; cover detection with `blue_cell` and \
-reporting via specialists' `report_executive` / `record_finding`. Give each delegation a specific, \
-self-contained task string — the specialist does not see this conversation, but every specialist \
-records into the one shared engagement finding store. Keep your own messages brief; the specialists \
-do the work. Finish with a short engagement summary."
+permission on systems they own or may test. You have the FULL offensive toolkit yourself AND the \
+`delegate` tool. PREFER to delegate each kill-chain phase to a specialist — a delegation runs in an \
+isolated context with a focused toolset, keeping your own context clean. Available specialists, in \
+kill-chain order: {roster}. Delegate reconnaissance FIRST (`recon`/`osint_operator`), then pass its \
+concrete results into the exploitation and post-exploitation phases; cover detection with \
+`blue_cell`. Give each delegation a specific, self-contained task string — the specialist does not \
+see this conversation, but you and every specialist share ONE engagement knowledge graph and finding \
+store. Use your own tools directly for the things delegation is clumsy for: call `kg_stats` / \
+`kg_query` / `report_executive` to SEE what has been found so far and plan the next phase from it, \
+and `record_finding` to consolidate exposures the specialists left unrecorded. Each delegation's \
+result reports `findings_added`: if it is > 0 the specialist already recorded its findings — do NOT \
+re-record them (that duplicates the finding); only record concrete exposures yourself when a \
+delegation returns `findings_added: 0` (it summarized without recording). Record with \
+`record_finding` (the persistent KG), not `add_finding`. Keep your own messages brief; let the \
+specialists do the heavy work. Finish with a short engagement summary."
     )
 }
 
@@ -286,6 +295,16 @@ self-contained task — the specialist does not see this conversation.",
         .await;
 
         let findings_added = findings_count().saturating_sub(findings_before);
+        // Sum the provider-reported token usage across the specialist's sub-session,
+        // so the UI can show per-agent cost (like a workflow's agent panel).
+        let tokens: u64 = session
+            .events()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::AssistantMessage { usage: Some(u), .. } => Some(u.input_tokens + u.output_tokens),
+                _ => None,
+            })
+            .sum();
         let stop = match &outcome.stop_reason {
             StopReason::Completed => "completed".to_string(),
             StopReason::MaxSteps => "max-steps".to_string(),
@@ -299,6 +318,7 @@ self-contained task — the specialist does not see this conversation.",
                 stop: stop.clone(),
                 steps: outcome.steps,
                 findings_added,
+                tokens,
                 summary: outcome.final_text.clone(),
             });
         }
@@ -348,7 +368,12 @@ pub fn build_engagement(
         max_tokens,
         sink,
     )));
-    register_named_with_db(&mut registry, &["add_finding"], &findings, &store);
+    // The orchestrator gets the FULL arsenal too (sharing the same finding store +
+    // persistent KG), so it can consult the graph (kg_stats/kg_query) to plan, run
+    // a quick check itself, and consolidate findings via record_finding — never
+    // stuck without a tool. It still prefers `delegate` for multi-step phases (see
+    // `orchestrator_system`), keeping each phase's context isolated.
+    register_named_with_db(&mut registry, ALL_TOOLS, &findings, &store);
     registry
 }
 

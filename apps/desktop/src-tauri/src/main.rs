@@ -322,6 +322,7 @@ enum RunEvt {
         stop: String,
         steps: u64,
         findings_added: u64,
+        tokens: u64,
         summary: String,
     },
     Done,
@@ -353,6 +354,7 @@ fn specialist_evt(ev: SpecialistEvent) -> RunEvt {
             stop,
             steps,
             findings_added,
+            tokens,
             summary,
         } => RunEvt::SpecialistEnd {
             delegation,
@@ -361,6 +363,7 @@ fn specialist_evt(ev: SpecialistEvent) -> RunEvt {
             stop,
             steps,
             findings_added: findings_added as u64,
+            tokens,
             summary,
         },
     }
