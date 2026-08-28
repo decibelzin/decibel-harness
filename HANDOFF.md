@@ -20,16 +20,15 @@ catalog). Each model carries a `provider` tag; a run routes to the matching
 endpoint + keyring key. The adapter crate is still **named** `decibel-openrouter`
 (legacy label — it's a generic OpenAI-compatible adapter).
 
-### BIG NEWS — the Decepticon port (this session)
+### BACKGROUND — the Decepticon port (an earlier session, all pushed)
 
 Ported the entire Rust-coded Decepticon arsenal into decibel. **The harness went
-from 9 tools / 3 specialists to 79 tools / 17 specialists**, plus a knowledge
-graph, an execution plane, a safety envelope, and an MCP client. **Everything
-compiles and `cargo test --workspace` is GREEN (~380 tests).** The native app was
-**confirmed working LIVE** this session (real recon vs 127.0.0.1: port_scan found
-8 ports incl. MariaDB, http_probe/http/cve_by_package/add_finding all ran).
+from 9 tools / 3 specialists to 79 tools / 17 specialists** (now **80** with
+`run_code`), plus a knowledge graph, an execution plane, a safety envelope, and an
+MCP client. The native app was **confirmed working LIVE** (real recon vs 127.0.0.1:
+port_scan found 8 ports incl. MariaDB, http_probe/http/cve_by_package/add_finding ran).
 
-**Committed on `main` (NOT pushed) — 6 feature commits this session:**
+**Feature commits from that port (all pushed):**
 - `2701bda` decibel-store (SQLite KG + OPPLAN + chain planner) + decibel-executor (bash sessions + Remote-SSH + poc_validate)
 - `3f9912b` decibel-offsec: 9 → 79 tools (web/cloud/reversing/refs/arsenal/contracts/cve + envelope + KG/OPPLAN/planning/skills tools)
 - `7ba053b` decibel-orchestrator: 3 → 17 specialists (+ 5 vulnresearch pipeline)
@@ -37,20 +36,40 @@ compiles and `cargo test --workspace` is GREEN (~380 tests).** The native app wa
 - `60a1750` app backend: orchestrate mode + widened read-only subset
 - `9c32934` app UI slice: orchestrate toggle, findings panel, envelope (shield+strip+scope), MCP config Settings tab
 
-### NEWER — §1 both follow-ups DONE this session (nested streaming + persistent KG)
+### CURRENT STATE — almost the entire backlog is DONE + PUSHED (latest session)
 
-The §0 shell/max_steps fix is committed (`66c4f08`) and everything through the
-Decepticon port is pushed. **This session implemented the whole of backlog §1**
-(nested specialist streaming + persistent KG/findings) — see the §1 entry below,
-now marked done. All green: `cargo test --workspace` **382 pass**, Tauri
-`cargo check` clean, `tsc --noEmit` clean. An adversarial 4-dimension review ran
-after and found 3 real issues, all fixed (findings_added counted the wrong store;
-no sqlite busy_timeout; the specialist end-summary was invisible for non-streaming
-models). **Uncommitted at handoff** unless the commit below already ran.
+`origin/main` is at **`95c7ad6`** and everything below is **committed AND pushed**
+(working tree clean). Tests: `cargo test --workspace` **385 pass**, Tauri
+`cargo check` clean, `tsc --noEmit` clean. The toolkit is now **80 tools** (added
+`run_code`). **Every substantial change was adversarially reviewed** (7 review
+workflows this session; each caught real bugs, all fixed).
+
+Done this session, in order (each `feat` + a `fix` from its review):
+- **§1** nested specialist streaming + persistent per-session KG/findings (`59f3b81`).
+- **Agents panel** — live right-column cockpit: per-specialist status/duration/tokens,
+  click-to-scroll (`fb381a4`). **Orchestrator got the full arsenal** + per-agent token
+  accounting (`b904a60`).
+- **Typography** — the **Space family** (Space Grotesk UI + Space Mono code) bundled
+  offline via `@fontsource` (`6e1bff0`,`403142c`). Tool cards start **collapsed** (`dae2e9b`).
+- **§2** findings export (Markdown + SARIF) (`d2b6341`).
+- **§3** context meter + configurable max-steps + opt-in auto-compaction (`4260af9`).
+- **§6** SKILL.md corpus (4 playbooks, bundled) + MCP auto-sync on startup (`163c1af`).
+- **§7 #12** findings survive reload (`session_findings` reads the persistent KG) (`9813e7a`).
+- **§4** the `shell` tool routes through a **Remote (SSH)** backend (`a0a25c3`) — coherent:
+  remote mode drops the local-host tools (`REMOTE_LOCAL_ONLY`) so the agent works entirely
+  through the remote shell (`e07e9ec`). ⚠️ **SSH path compile-verified only — NEVER run
+  against a real box** (no SSH server in the sandbox). Needs one live test on any SSH host.
+- **§5** Goals panel (OPPLAN objective tree, `a552c3e`) · 👍/👎 message feedback (`2d41a93`) ·
+  **`run_code`** (Code Mode's execution core — write+run a python/node/bash script in one
+  call, local or remote, `093c530`). Background jobs ≈ the existing `bash*` session family.
+
+**Only three things genuinely remain** (see §4 follow-up + §5 SDK + §7 debts below):
+the Code-Mode **tools-as-functions SDK** (needs an IPC design), the **§4 full-remote**
+follow-up (route nmap/bash*/fs remotely; test on a real box), and the low **§7 debts**.
 
 > ⚠️ Stray untracked junk in the tree — do NOT `git add -A`. Never-ours:
-> `test_ports.py`, `apps/desktop/src-tauri/4000`, and a new reserved-name file
-> `crates/decibel-offsec/NUL`. Always add the changed files explicitly.
+> `test_ports.py`, `apps/desktop/src-tauri/4000`, `crates/decibel-offsec/NUL`.
+> Always add the changed files explicitly.
 
 ---
 
@@ -67,13 +86,15 @@ Then **Settings → Models & Providers**: paste a **DeepSeek** key (needs credit
 **OpenRouter** key; pick a model in the composer chip. Dev override: `DEEPSEEK_API_KEY`
 / `OPENROUTER_API_KEY` env (or a gitignored `.env`).
 
-Modes (composer chips): **act** (full 79-tool arsenal) · **plan** (no tools, propose
-only) · **orchestrate** (multi-agent — delegates to the 17 specialists). Access:
-**full** or **read-only** (non-destructive subset). Settings has an **Engagement
-scope** field (arms the RoE gate) and an **MCP Servers** tab.
+Modes (composer chips): **act** (full 80-tool arsenal) · **plan** (no tools, propose
+only) · **orchestrate** (multi-agent — delegates to the 17 specialists, streamed live in
+the **Agents panel**). Access: **full** or **read-only**. The composer has a **context
+meter**; the sidebar has **Agents** / **Goals** / **Findings** (Findings drawer exports
+MD/SARIF); assistant messages take 👍/👎. Settings: **Engagement scope** (RoE gate),
+**max-steps**, **auto-compact**, **Remote SSH**, **MCP Servers** tab.
 
 Core tests: `cd C:\Users\vi\Desktop\decibel-harness && cargo test --workspace`
-(~380 pass). Tauri is its OWN workspace: `cd apps/desktop/src-tauri && cargo check`.
+(**385 pass**). Tauri is its OWN workspace: `cd apps/desktop/src-tauri && cargo check`.
 Frontend typecheck: `cd apps/desktop/ui && npx tsc --noEmit`.
 
 ---
@@ -81,10 +102,17 @@ Frontend typecheck: `cd apps/desktop/ui && npx tsc --noEmit`.
 ## Gotchas
 
 - **App lock** — close the Decibel window before rebuilding the Rust backend.
+- **A running `npm run app` will NOT pick up a font/import change** — fully quit + restart
+  (Vite doesn't hot-swap the `@fontsource` imports in `index.tsx`). Component edits DO HMR.
 - **DeepSeek is billed**; **OpenRouter free is rate-limited** (per-day 429). No auto-fallback.
-- **Shell = Git Bash on Windows** now (was cmd) — POSIX commands work. Falls back to cmd if Git Bash is absent.
-- **Two stray untracked files** in the tree are NOT ours — do NOT commit them: `test_ports.py` (repo root) and `apps/desktop/src-tauri/4000`.
-- **Safety classifier note (this session only):** after the live recon against a real target, the auto-mode classifier blocked non-read-only Bash (cargo/git). A fresh session or the default permission mode clears it.
+- **Shell = Git Bash on Windows** (was cmd) — POSIX commands work. Falls back to cmd if absent.
+- **Remote (SSH) mode** (Settings → Remote execution): `shell`/`run_code` run on the remote
+  host; local-host tools are dropped for coherence. **Never tested against a real box** — needs one.
+- **Stray untracked junk — NEVER `git add -A`.** Not ours: `test_ports.py`, `apps/desktop/src-tauri/4000`,
+  `crates/decibel-offsec/NUL` (Windows reserved name — regenerates). Add changed files explicitly.
+- **Windows shell quirks:** `rtk`/`rg` may be absent (use the Grep/Read tools, not `grep`/`cat`);
+  `cargo`/`tsc` recompiles are slow. Each big change was verified with `cargo test --workspace` +
+  `cd apps/desktop/src-tauri && cargo check` + `cd apps/desktop/ui && npx tsc --noEmit`.
 
 ---
 
@@ -97,27 +125,35 @@ crates/
   decibel-openrouter   OpenAI-compatible streaming adapter (per-run base URL) + model catalog [legacy name]
   decibel-tools        Tool trait (canonical value + pure render) + registry + Pre/PostPolicy
   decibel-agent        run_turn / run_turn_observed (live Progress), AgentConfig (max_steps)
-  decibel-offsec       **79 tools** — see below — + register_named/register_all/register_all_with_envelope; Scope/ScopePolicy/ShieldPolicy
-  decibel-orchestrator **17 specialists** (roster.rs: SpecialistSpec + gates) + SubagentTool `delegate` + build_engagement + specialists/*.md
-  decibel-store        SQLite knowledge graph: nodes/edges + vocab, ingest, chain planner (Dijkstra), analysis, opplan, report/SARIF
-  decibel-executor     execution plane: LocalExecutor + RemoteExecutor (SSH via russh) + SessionManager (persistent shells) + poc_validate
+  decibel-offsec       **80 tools** — see below — + register_named / register_named_with_db(…, remote) /
+                    register_all; re-exports Db, Backend/Executor/make_executor, kg_list_findings, kg_list_objectives,
+                    Objective, ephemeral_db, REMOTE_LOCAL_ONLY; shell::run_shell shared by shell + run_code; Scope/Shield
+  decibel-orchestrator **17 specialists** + SubagentTool `delegate`; build_engagement(adapter,model,max_tokens,
+                    findings, store, remote, sink) → registry; SpecialistEvent/SpecialistSink (nested UI streaming)
+  decibel-store        SQLite KG: nodes/edges, ingest, chain planner, analysis, opplan (Objective/list_objectives),
+                    report/SARIF; Db(pub Arc<Mutex<Connection>>) — Db::open/handle/finding_count; open_conn sets WAL+busy_timeout
+  decibel-executor     execution plane: Executor{Local,Remote(SSH via russh)}, Backend enum, make(), ExecRequest/ExecResult,
+                    SessionManager (persistent shells), poc_validate
   decibel-mcp          MCP CLIENT: McpConnection/McpClient/McpTool + connect/register_mcp_server
 apps/desktop/
-  src-tauri/src/main.rs  Tauri v2. run_prompt(mode/access/scope/…): act→ALL_TOOLS, readonly→READONLY_TOOLS,
-                    plan→none, orchestrate→build_engagement; installs ShieldPolicy (non-plan) + ScopePolicy (when scope set).
-                    McpState + set_mcp_servers/list_mcp_servers. Sessions (multi-turn) + persistence + slash cmds.
-  ui/src/           SolidJS: App.tsx (composer, mode/access chips, tool cards, findings drawer, tabbed Settings w/ MCP + scope),
-                    store.ts (Mode incl. orchestrate, findings(), stripUntrusted, mcp config), api.ts (RunEvent, runPrompt, mcp/session cmds)
+  src-tauri/src/main.rs  Tauri v2. run_prompt(mode/access/scope/image/max_steps/remote/…): act→ALL_TOOLS
+                    (minus REMOTE_LOCAL_ONLY when remote), readonly→READONLY_TOOLS, plan→none, orchestrate→build_engagement;
+                    ShieldPolicy(non-plan)+ScopePolicy(when scope). Per-session Engagements{db,findings}; SpecialistEvent→RunEvt.
+                    Commands: session_findings/session_objectives/write_text_file/session_context/compact + mcp/session/keys.
+                    skills corpus wired via DECIBEL_SKILLS_DIR at startup; bundles skills/ as a Tauri resource.
+  ui/src/           SolidJS. App.tsx: composer + context meter, mode/access chips, collapsed tool cards, **Agents panel**
+                    (right column, live), Findings + **Goals** drawers, 👍/👎 feedback, tabbed Settings (MCP, scope, max-steps,
+                    auto-compact, **Remote SSH**). store.ts: applyEvent (incl. SpecialistRun nested under delegate), findings()
+                    (both shapes, deduped, + persisted), objectives(), contextUsage(), remoteExec, feedback. report.ts: MD/SARIF.
+                    api.ts: RunEvent (+ specialist_* variants), runPrompt, session_findings/objectives, saveExport.
 ```
 
-**The 79 tools** (in `decibel_offsec::ALL_TOOLS`): core 9 (shell, nmap, http,
-read/write/edit, glob/grep, add_finding); web 6 (jwt_parse/forge/crack, cookie/
-oauth/graphql); cloud 6 (iam/s3/user_data/k8s/tfstate/metadata); reversing 5
-(bin_*); refs 3 (payload_search, killchain_*); arsenal 7 (port_scan, http_probe,
-web_crawl, content_discovery, tls_inspect, dns, dns_subdomains); contracts 5
-(solidity/foundry_*); cve 2; evidence 3 + shield_scan; exec 6 (bash*/poc_validate);
-KG 15 (kg_*, plan_chains, impact_analysis, record_finding, cvss_score,
-report_executive); OPPLAN 7; planning 2; skills 2.
+**The 80 tools** (in `decibel_offsec::ALL_TOOLS`): core 10 (shell, **run_code**, nmap,
+http, read/write/edit, glob/grep, add_finding); web 6 (jwt_parse/forge/crack, cookie/
+oauth/graphql); cloud 6; reversing 5 (bin_*); refs 3; arsenal 7 (port_scan, http_probe,
+web_crawl, content_discovery, tls_inspect, dns, dns_subdomains); contracts 5; cve 2;
+evidence 3 + shield_scan; exec 6 (bash*/poc_validate); KG 15 (kg_*, plan_chains,
+impact_analysis, record_finding, cvss_score, report_executive); OPPLAN 7; planning 2; skills 2.
 
 **Source to port from:** the sibling `C:\Users\vi\Desktop\decepticon-control-center`
 is a mature Rust reimplementation of Decepticon — the copy-portable crates all
