@@ -11,6 +11,7 @@ import {
   renameSession,
   runPrompt,
   sessionContext,
+  setMcpServers as apiSetMcpServers,
   type DisplayMsg,
   type ModelInfo,
   type SessionMeta,
@@ -167,6 +168,19 @@ export { mcpServers }
 export function saveMcpServers(list: McpServer[]): void {
   setMcpServersSignal(list)
   writePref('decibel.mcp', JSON.stringify(list))
+}
+
+/** On app start, push the persisted MCP server list to the backend (connect +
+ * keep warm) so `run_prompt` has the external tools without waiting for the user
+ * to open Settings and hit Connect. No-op when nothing is configured. */
+export async function syncMcpToBackend(): Promise<void> {
+  const list = mcpServers()
+  if (list.length === 0) return
+  try {
+    await apiSetMcpServers(list)
+  } catch {
+    /* a server may be offline — surfaced when the user opens Settings or runs */
+  }
 }
 
 // Access preset: 'full' = every tool; 'readonly' = recon/inspection only (no

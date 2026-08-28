@@ -1095,6 +1095,26 @@ fn rename_session(app: AppHandle, id: String, title: String) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
+/// Point `DECIBEL_SKILLS_DIR` at the shipped SKILL.md corpus so `skills_find` /
+/// `skills_load` have playbooks even when the session workspace has none. An
+/// operator-set env var wins; otherwise use the bundled resource dir (a real
+/// build) or, failing that, the crate's `skills/` dir (dev / `npm run app`).
+fn install_skills_corpus(app: &AppHandle) {
+    if std::env::var("DECIBEL_SKILLS_DIR").ok().filter(|s| !s.trim().is_empty()).is_some() {
+        return; // operator override wins
+    }
+    let candidates = [
+        app.path().resource_dir().ok().map(|r| r.join("skills")),
+        Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/skills"))),
+    ];
+    for dir in candidates.into_iter().flatten() {
+        if dir.is_dir() {
+            std::env::set_var("DECIBEL_SKILLS_DIR", dir);
+            return;
+        }
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1103,6 +1123,7 @@ fn main() {
             app.manage(Sessions::default());
             app.manage(Engagements::default());
             app.manage(McpState::default());
+            install_skills_corpus(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

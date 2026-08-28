@@ -59,6 +59,7 @@ import {
   setSelectedModel,
   setWorkspace,
   setWorkspacePanelOpen,
+  syncMcpToBackend,
   theme,
   visibleModels,
   workspace,
@@ -1508,7 +1509,10 @@ function AgentsPanel() {
 }
 
 export default function App() {
-  onMount(loadModels)
+  onMount(() => {
+    loadModels()
+    void syncMcpToBackend()
+  })
   const empty = () => conversation.list.length === 0
   return (
     <div class={`app${agentsPanelOpen() ? ' agents-open' : ''}`}>
