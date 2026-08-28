@@ -1,9 +1,11 @@
 import { render } from 'solid-js/web'
 
-// Bundled variable fonts (offline, no FOUC): Space Grotesk for UI, JetBrains Mono
-// for code — a clean, consistent look on every OS instead of the platform default.
+// Bundled fonts (offline, no FOUC): the unified "Space" family — Space Grotesk for
+// UI, Space Mono for code/terminal/numbers — a consistent look on every OS instead
+// of the platform default. Space Mono ships 400/700; 600-weight labels map to 700.
 import '@fontsource-variable/space-grotesk'
-import '@fontsource-variable/jetbrains-mono'
+import '@fontsource/space-mono/400.css'
+import '@fontsource/space-mono/700.css'
 import './theme.css'
 import App from './App'
 import { applyTheme, theme } from './store'
