@@ -103,13 +103,23 @@ impl Tool for ShellTool {
     }
 
     fn schema(&self) -> ToolSchema {
+        let description = if self.remote.is_some() {
+            "Run a command on the configured REMOTE host over SSH and return its stdout, stderr, \
+             and exit code. This engagement runs REMOTE: `shell` is your only path to the target \
+             box — use it for ALL host work (recon like nmap/curl, and file ops like cat/grep/ls); \
+             there are no local filesystem tools. Each call runs in a fresh shell (no state \
+             persists); pass `workdir` for the remote working directory."
+                .to_string()
+        } else {
+            "Run a command through the OS shell (Git Bash if present on Windows, else cmd; sh on \
+             Unix) and return its stdout, stderr, and exit code. Each call runs in a fresh shell — \
+             no state persists between calls; pass `workdir` instead of using cd. Use this to run \
+             any installed tool (nmap, sqlmap, curl, etc.)."
+                .to_string()
+        };
         ToolSchema {
             name: "shell".into(),
-            description: "Run a command through the OS shell (Git Bash if present on Windows, else \
-                cmd; sh on Unix) and return its stdout, stderr, and exit code. Each call runs in a \
-                fresh shell — no state persists between calls; pass `workdir` instead of using cd. \
-                Use this to run any installed tool (nmap, sqlmap, curl, etc.)."
-                .into(),
+            description,
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -129,13 +139,19 @@ impl Tool for ShellTool {
         let timeout = Duration::from_millis(timeout_ms);
 
         // Remote (SSH) backend: run the command on the remote host and map its
-        // result into the same shape as a local run.
+        // result into the same shape as a local run. Race the exec against the
+        // cancellation token so Stop returns promptly (the remote process may linger
+        // — SSH gives no reliable kill — but the turn is not blocked).
         if let Some(executor) = &self.remote {
             let mut req = ExecRequest::new(&command).timeout_ms(timeout_ms);
             if let Some(dir) = &workdir {
                 req = req.cwd(dir.clone());
             }
-            let r = executor.exec(req).await.map_err(ToolError::execution)?;
+            let r = tokio::select! {
+                biased;
+                _ = ctx.token().cancelled() => return Err(ToolError::Aborted),
+                out = executor.exec(req) => out.map_err(ToolError::execution)?,
+            };
             let (stdout, out_cut) = truncate_bytes(&r.stdout, MAX_STREAM_BYTES);
             let (stderr, err_cut) = truncate_bytes(&r.stderr, MAX_STREAM_BYTES);
             return Ok(json!({

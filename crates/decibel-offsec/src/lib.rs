@@ -132,6 +132,19 @@ pub fn ephemeral_db() -> Db {
     Db(Arc::new(std::sync::Mutex::new(decibel_store::open_memory())))
 }
 
+/// Tools that act on the LOCAL host and so must NOT be registered in Remote (SSH)
+/// mode, where `shell` runs on a different host — mixing them would silently point
+/// the agent at two filesystems/vantages. The agent uses the remote `shell` for all
+/// of these instead (cat/grep/find, nmap/curl, a remote `bash`). Excludes: local
+/// filesystem + search, target-facing network probes (local vantage), the local
+/// `bash*` session family, and `poc_validate` (local executor).
+pub const REMOTE_LOCAL_ONLY: &[&str] = &[
+    "read_file", "write_file", "str_replace", "glob", "grep",
+    "nmap", "http", "port_scan", "http_probe", "web_crawl", "content_discovery",
+    "tls_inspect", "dns", "dns_subdomains",
+    "bash", "bash_input", "bash_output", "bash_status", "bash_kill", "poc_validate",
+];
+
 /// Register the named subset of the toolkit into `registry`, sharing `findings`
 /// as the store `add_finding` records into. Unknown names are ignored, so a
 /// specialist can name exactly the tools it should have. `add_finding` is only
@@ -164,6 +177,16 @@ pub fn register_named_with_db(
     // Created unconditionally (cheap — an empty map) and used only by the bash arms.
     let sessions = Arc::new(decibel_executor::SessionManager::new("."));
     for name in names {
+        // In Remote (SSH) mode `shell` runs on the remote host — but the local-host
+        // tools (filesystem, target-facing probes with a LOCAL network vantage,
+        // local bash sessions, local poc_validate) would touch a DIFFERENT host and
+        // silently mislead the agent (write a file locally, run it remotely → "no
+        // such file"). Skip them so the agent does all host work through the remote
+        // `shell` (cat/grep/nmap/curl on the remote box); host-agnostic analyzers,
+        // the KG, findings, and skills stay available.
+        if remote.is_some() && REMOTE_LOCAL_ONLY.contains(name) {
+            continue;
+        }
         match *name {
             "shell" => registry.register(match &remote {
                 Some(executor) => Arc::new(ShellTool::remote(executor.clone())),
@@ -299,5 +322,28 @@ mod tests {
             assert!(names.contains(&expected.to_string()), "missing tool {expected}");
         }
         assert_eq!(names.len(), ALL_TOOLS.len());
+    }
+
+    #[test]
+    fn remote_mode_excludes_local_only_tools() {
+        // In Remote (SSH) mode only `shell` (routed remote) + host-agnostic tools
+        // should register; the local-host tools would touch a different host.
+        let mut registry = ToolRegistry::new();
+        let findings = FindingStore::new();
+        // Any Some(executor) trips the remote guard — the variant is irrelevant here.
+        let exec = Arc::new(
+            decibel_executor::make(decibel_executor::Backend::Local { workspace: ".".into() }).unwrap(),
+        );
+        register_named_with_db(&mut registry, ALL_TOOLS, &findings, &ephemeral_db(), Some(exec));
+        let names: Vec<String> = registry.schemas().into_iter().map(|s| s.name).collect();
+        assert!(names.contains(&"shell".to_string()), "shell must stay in remote mode");
+        assert!(names.contains(&"record_finding".to_string()), "KG stays host-agnostic");
+        assert!(names.contains(&"jwt_parse".to_string()), "analyzers stay host-agnostic");
+        for excluded in REMOTE_LOCAL_ONLY {
+            assert!(
+                !names.contains(&excluded.to_string()),
+                "local-only tool `{excluded}` leaked into remote mode"
+            );
+        }
     }
 }

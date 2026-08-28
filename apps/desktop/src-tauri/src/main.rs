@@ -525,32 +525,47 @@ async fn run_prompt(
     // for this turn write into a store that outlives the turn — the knowledge graph
     // and recorded findings accumulate instead of resetting each turn.
     let (db, findings) = engagement_handles(&engagements, &app, &session_id);
-    // Remote (SSH) execution plane: when the operator configured a Remote backend,
-    // the `shell` tool runs commands on that host instead of locally — driving a
-    // real box's arsenal over SSH. A build error (e.g. missing key file) aborts the
-    // run rather than silently falling back to local (the target was chosen remote).
-    let remote_exec: Option<Arc<decibel_offsec::Executor>> = match remote.filter(|r| !r.host.trim().is_empty()) {
-        Some(r) => {
-            let backend = decibel_offsec::Backend::Remote {
-                host: r.host,
-                port: r.port,
-                user: r.user,
-                workspace: r.workspace.filter(|s| !s.trim().is_empty()),
-                password: None,
-                key_path: Some(r.key_path).filter(|s| !s.trim().is_empty()),
-                passphrase: None,
-            };
-            match decibel_offsec::make_executor(backend) {
-                Ok(e) => Some(Arc::new(e)),
-                Err(e) => {
-                    let _ = on_event.send(RunEvt::Error { message: format!("Remote execution: {e}") });
-                    let _ = on_event.send(RunEvt::Done);
-                    return Ok(());
+    // Remote (SSH) execution plane — only for EXECUTING runs (plan runs no tools):
+    // when configured, the `shell` tool runs commands on that host instead of
+    // locally. A build error (bad/missing key file, unresolvable config) aborts the
+    // run rather than silently falling back to local (the target was chosen remote);
+    // a bad host still surfaces on the first command (the SSH connect is lazy).
+    let abort = |msg: String| {
+        if let Ok(mut map) = runs.0.lock() {
+            map.remove(&run_id);
+        }
+        let _ = on_event.send(RunEvt::Error { message: msg });
+        let _ = on_event.send(RunEvt::Done);
+    };
+    let remote_exec: Option<Arc<decibel_offsec::Executor>> =
+        match remote.filter(|_| !plan).filter(|r| !r.host.trim().is_empty()) {
+            Some(r) => {
+                let key_path = Some(r.key_path).filter(|s| !s.trim().is_empty());
+                if let Some(p) = &key_path {
+                    if !std::path::Path::new(p).is_file() {
+                        abort(format!("Remote execution: key file not found: {p}"));
+                        return Ok(());
+                    }
+                }
+                let backend = decibel_offsec::Backend::Remote {
+                    host: r.host,
+                    port: r.port,
+                    user: r.user,
+                    workspace: r.workspace.filter(|s| !s.trim().is_empty()),
+                    password: None,
+                    key_path,
+                    passphrase: None,
+                };
+                match decibel_offsec::make_executor(backend) {
+                    Ok(e) => Some(Arc::new(e)),
+                    Err(e) => {
+                        abort(format!("Remote execution: {e}"));
+                        return Ok(());
+                    }
                 }
             }
-        }
-        None => None,
-    };
+            None => None,
+        };
     let mut registry = ToolRegistry::new();
     if orchestrate {
         // Forward each specialist's live progress to the UI as a nested timeline

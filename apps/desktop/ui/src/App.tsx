@@ -515,12 +515,12 @@ function GeneralTab() {
         <Show when={remoteExec().enabled}>
           <div class="remote-grid">
             <input class="remote-in" placeholder="host or IP" value={remoteExec().host} onInput={(e) => setRemoteExec({ ...remoteExec(), host: e.currentTarget.value })} />
-            <input class="remote-in" type="number" placeholder="port 22" value={remoteExec().port ?? ''} onInput={(e) => setRemoteExec({ ...remoteExec(), port: parseInt(e.currentTarget.value, 10) || undefined })} />
+            <input class="remote-in" type="number" min={1} max={65535} placeholder="port 22" value={remoteExec().port ?? ''} onInput={(e) => { const n = parseInt(e.currentTarget.value, 10); setRemoteExec({ ...remoteExec(), port: n >= 1 && n <= 65535 ? n : undefined }) }} />
             <input class="remote-in" placeholder="user" value={remoteExec().user} onInput={(e) => setRemoteExec({ ...remoteExec(), user: e.currentTarget.value })} />
             <input class="remote-in remote-wide" placeholder="private key file path (e.g. C:\\Users\\you\\.ssh\\id_ed25519)" value={remoteExec().keyPath} onInput={(e) => setRemoteExec({ ...remoteExec(), keyPath: e.currentTarget.value })} />
             <input class="remote-in remote-wide" placeholder="remote workspace dir (optional)" value={remoteExec().workspace ?? ''} onInput={(e) => setRemoteExec({ ...remoteExec(), workspace: e.currentTarget.value || undefined })} />
           </div>
-          <div class="field-help" style={{ 'margin-top': '8px' }}>Uses an unencrypted key file (or one your ssh-agent holds). A connection/build error aborts the run rather than silently running locally.</div>
+          <div class="field-help" style={{ 'margin-top': '8px' }}>Uses an unencrypted private key file. In Remote mode only <code>shell</code> and host-agnostic tools are available — do all target work through <code>shell</code>. A missing key file aborts the run before it starts; a bad host or auth failure surfaces on the first command (the SSH connection is lazy).</div>
         </Show>
       </div>
       <div class="setting">
