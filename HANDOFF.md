@@ -192,16 +192,24 @@ forbids reuse — do NOT port from it.**
   Follow-up: route `nmap`/`bash*`/fs via SFTP+remote-sessions for a fuller remote arsenal;
   container backend.
 
-### 5. Larger parity (F) — **tractable half DONE; two large items left**
-- ✅ **goals** (`a552c3e`) — a **Goals drawer** (sidebar button, like Findings) surfaces the
-  OPPLAN objective tree via `session_objectives(id)` (reads the KG `list_objectives`): status
-  pills, phase, parent nesting, priority order; refreshed on load + after each turn.
-- ✅ **message feedback** (`2d41a93`) — subtle 👍/👎 on completed assistant messages, keyed
-  `${sessionId}:${index}` and persisted to localStorage (a local note; no destination yet).
-- ❌ **background jobs** (long-running tools detached from the turn) — large (async job mgmt).
-- ❌ **Code Mode** (`run_code` + a sandboxed SDK where the model writes code that calls tools
-  programmatically) — a major standalone feature; **needs a design pass first** (what does
-  `run_code` execute, what's the SDK/tool-call contract, what's the sandbox). Do it alone.
+### 5. Larger parity (F) — **mostly DONE; only the tools-as-functions SDK is left**
+- ✅ **goals** (`a552c3e`) — a **Goals drawer** surfaces the OPPLAN objective tree via
+  `session_objectives(id)`: status pills, phase, parent nesting, priority order.
+- ✅ **message feedback** (`2d41a93` + `9364149`) — 👍/👎 on assistant messages, per-session
+  (deliberately NOT persisted — the reconstructed transcript re-indexes messages, so a stored
+  index would rate the wrong message on reload).
+- ✅ **Code Mode — execution core** (`093c530`): a **`run_code`** tool — write a whole script
+  (python/node/bash) and run it in one call (quoted heredoc → interpreter, no temp file);
+  reuses the shared `run_shell` helper so it runs local OR on the Remote (SSH) host. In
+  `ALL_TOOLS`, remote-routed, NOT in READONLY.
+  - ❌ **Follow-up — the "SDK" half**: a *tools-as-functions* bridge so the model's code can
+    call the other tools programmatically (e.g. `decibel.http(url)`, `decibel.record_finding(…)`).
+    Needs an IPC bridge (script↔app tool-call protocol) + a way to give `run_code` the tool
+    registry — a real design; do it alone.
+- ✅ **background jobs** — effectively covered by the existing **`bash*` session family**
+  (`bash`/`bash_input`/`bash_output`/`bash_status`/`bash_kill`): start a long command, poll its
+  output, kill it — async execution detached from a single tool call. A separate job system
+  would duplicate this; a "jobs panel" UI over the sessions would be the only add.
 
 ### 6. Skills corpus + MCP polish — ✅ DONE (`163c1af`)
 - **4 SKILL.md playbooks** (reconnaissance, web-exploitation, network-services, reporting)
@@ -222,13 +230,14 @@ forbids reuse — do NOT port from it.**
 
 ## Suggested next-session order
 
-1. §0–§4(slice), §6, §7#12, and §5's tractable half (goals + feedback) are **DONE**. What's
-   left is only the *large* items: **§5 background jobs + Code Mode**, the **§4 follow-up**
-   (fuller remote arsenal), and the low **§7 debts** (crate rename, etc.).
-2. **§5 large (each its own session)**: **background jobs**, then **Code Mode** — design first
-   (what `run_code` executes + the sandboxed SDK/tool-call contract + the sandbox).
-3. **§4 follow-up**: route `nmap`/`bash*`/fs remotely (SFTP + remote sessions) for a full
-   remote arsenal; test against a real SSH box (the current slice is compile-verified only).
+1. §0–§4(slice), §5 (goals, feedback, run_code; background jobs ≈ `bash*`), §6, §7#12 are
+   **DONE**. What genuinely remains are three focused, design/test-heavy pieces:
+2. **Code Mode SDK** (tools-as-functions) — the `run_code` execution core is in; this adds the
+   IPC bridge so the script can call the agent's tools programmatically. Design first.
+3. **§4 follow-up** — route `nmap`/`bash*`/fs remotely (SFTP + remote sessions) for a full
+   remote arsenal; **test against a real SSH box** (the current slice is compile-verified only).
+4. **Low §7 debts** — deeper mid-step cancel, meta.json rename race, blocking fs IO on the
+   async worker, opener plugin for markdown links, crate rename (all low value).
 
 Rebuild = close app + `npm run app`. Keep committing per feature. An adversarial
 review workflow after risky changes has caught real bugs repeatedly (it caught the §4
