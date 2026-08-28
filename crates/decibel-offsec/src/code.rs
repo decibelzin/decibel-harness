@@ -128,10 +128,19 @@ impl Tool for RunCodeTool {
             out.push_str("\n[stderr]\n");
             out.push_str(stderr);
         }
+        // Mirror `shell`'s render so the model is never fed truncated/signalled output
+        // as if it were complete.
+        if value.get("stdout_truncated").and_then(Value::as_bool).unwrap_or(false)
+            || value.get("stderr_truncated").and_then(Value::as_bool).unwrap_or(false)
+        {
+            out.push_str("\n[output truncated]");
+        }
         if value.get("timed_out").and_then(Value::as_bool).unwrap_or(false) {
             out.push_str("\n[timed out]");
         } else if let Some(code) = value.get("exit_code").and_then(Value::as_i64) {
             out.push_str(&format!("\n[exit code: {code}]"));
+        } else if let Some(sig) = value.get("signal").and_then(Value::as_str) {
+            out.push_str(&format!("\n[killed by signal: {sig}]"));
         }
         vec![ContentBlock::text(out)]
     }
