@@ -310,7 +310,31 @@ function FindingsPanel() {
 
 // ── goals drawer (the OPPLAN objective tree, from the persistent KG) ───────────
 function GoalsPanel() {
-  const sorted = () => [...objectives()].sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title))
+  // Order roots-then-their-children (kill-chain priority, id tiebreak) so a child is
+  // always drawn right after its parent — a flat priority sort could float an
+  // indented child above the objective it belongs to.
+  const ordered = () => {
+    const objs = objectives()
+    const cmp = (a: Objective, b: Objective) => a.priority - b.priority || a.id.localeCompare(b.id)
+    const byParent = new Map<string, Objective[]>()
+    const roots: Objective[] = []
+    for (const o of objs) {
+      if (o.parent_id && objs.some((p) => p.id === o.parent_id)) {
+        const arr = byParent.get(o.parent_id) ?? []
+        arr.push(o)
+        byParent.set(o.parent_id, arr)
+      } else {
+        roots.push(o)
+      }
+    }
+    const out: Objective[] = []
+    const walk = (o: Objective) => {
+      out.push(o)
+      ;(byParent.get(o.id) ?? []).sort(cmp).forEach(walk)
+    }
+    roots.sort(cmp).forEach(walk)
+    return out
+  }
   const done = () => objectives().filter((o) => o.status === 'completed').length
   return (
     <div class="modal-backdrop findings-back" onClick={() => setGoalsOpen(false)}>
@@ -331,7 +355,7 @@ function GoalsPanel() {
               </div>
             }
           >
-            <For each={sorted()}>
+            <For each={ordered()}>
               {(o: Objective) => (
                 <div class={`goal-item ${o.parent_id ? 'child' : ''}`}>
                   <div class="goal-head">

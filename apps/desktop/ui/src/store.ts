@@ -280,32 +280,20 @@ export interface Msg {
 
 export const [conversation, setConversation] = createStore<{ list: Msg[] }>({ list: [] })
 
-// Per-message 👍/👎 feedback, keyed `${sessionId}:${index}` and persisted, so a
-// rating survives reload. Purely a local note (no destination) for now.
-function readFeedback(): Record<string, 'up' | 'down'> {
-  try {
-    const raw = localStorage.getItem('decibel.feedback')
-    const v = raw ? JSON.parse(raw) : {}
-    return v && typeof v === 'object' ? v : {}
-  } catch {
-    return {}
-  }
-}
-const [feedback, setFeedbackStore] = createStore<Record<string, 'up' | 'down' | undefined>>(readFeedback())
+// Per-message 👍/👎 feedback, keyed `${sessionId}:${index}` — a live, per-session
+// note (no destination). Deliberately NOT persisted across reload: the reconstructed
+// transcript re-indexes messages (one per model STEP vs. one per turn live), so a
+// stored index would rate the wrong message. Within a live session messages are only
+// appended, so the index is stable.
+const [feedback, setFeedbackStore] = createStore<Record<string, 'up' | 'down' | undefined>>({})
 /** The rating for the assistant message at `idx` in the current session, if any. */
 export function feedbackFor(idx: number): 'up' | 'down' | undefined {
   return feedback[`${sessionId}:${idx}`]
 }
-/** Toggle a message's rating (clicking the active one clears it); persist. */
+/** Toggle a message's rating (clicking the active one clears it). */
 export function toggleFeedback(idx: number, v: 'up' | 'down'): void {
   const key = `${sessionId}:${idx}`
-  const next = feedback[key] === v ? undefined : v
-  setFeedbackStore(key, next)
-  try {
-    localStorage.setItem('decibel.feedback', JSON.stringify(feedback))
-  } catch {
-    /* private mode — rating just won't persist */
-  }
+  setFeedbackStore(key, feedback[key] === v ? undefined : v)
 }
 export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
@@ -315,9 +303,12 @@ export const [findingsOpen, setFindingsOpen] = createSignal(false)
 export const [goalsOpen, setGoalsOpen] = createSignal(false)
 export const [objectives, setObjectives] = createSignal<Objective[]>([])
 export type { Objective }
-/** Reload the session's objectives (goals) from the persistent KG. */
+/** Reload the session's objectives (goals) from the persistent KG. Guarded against
+ * a session switch mid-flight so a stale response can't clobber a newer session. */
 export async function refreshObjectives(): Promise<void> {
-  setObjectives(await sessionObjectives(sessionId).catch(() => []))
+  const sid = sessionId
+  const list = await sessionObjectives(sid).catch(() => [])
+  if (sid === sessionId) setObjectives(list)
 }
 // Live context-usage for the composer meter — refreshed after each turn (backend
 // `session_context`); reset when the conversation changes.
@@ -326,9 +317,12 @@ export const [contextInfo, setContextInfo] = createSignal<import('./api').Contex
 // drawer keeps them after a reload even though the reconstructed transcript drops the
 // structured tool `value`. Merged into `findings()`, deduped against the transcript.
 const [persistedFindings, setPersistedFindings] = createSignal<Finding[]>([])
-/** Reload the session's persisted findings (KG `record_finding` + `add_finding`). */
+/** Reload the session's persisted findings (KG `record_finding` + `add_finding`).
+ * Guarded against a session switch mid-flight (stale response can't clobber). */
 export async function refreshPersistedFindings(): Promise<void> {
-  const list = await sessionFindings(sessionId).catch(() => [])
+  const sid = sessionId
+  const list = await sessionFindings(sid).catch(() => [])
+  if (sid !== sessionId) return
   setPersistedFindings(
     list.map((f) => ({
       title: String(f.title ?? 'finding'),
