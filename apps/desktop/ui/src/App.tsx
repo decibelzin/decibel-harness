@@ -478,7 +478,12 @@ function GeneralTab() {
           min={1}
           max={200}
           value={maxSteps()}
-          onChange={(e) => setMaxSteps(parseInt(e.currentTarget.value, 10))}
+          onChange={(e) => {
+            setMaxSteps(parseInt(e.currentTarget.value, 10))
+            // Re-sync the field to the clamped value even when the signal didn't
+            // change (Solid suppresses equal writes), so it never shows a rejected number.
+            e.currentTarget.value = String(maxSteps())
+          }}
         />
       </div>
       <div class="setting row">

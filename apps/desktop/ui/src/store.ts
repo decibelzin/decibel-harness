@@ -807,6 +807,9 @@ async function runCompact(): Promise<void> {
     setConversation('list', [
       { role: 'system', blocks: [{ kind: 'notice', text: 'conversation compacted' }, { kind: 'text', text: summary }] },
     ])
+    // Drop the stale pre-compaction usage so the meter falls back to the (now tiny)
+    // transcript estimate immediately, instead of staying pinned until the next turn.
+    setContextInfo(null)
   } catch (e) {
     if (runId === activeRunId) pushSystem([{ kind: 'notice', text: `compact failed: ${e instanceof Error ? e.message : String(e)}` }])
   } finally {
