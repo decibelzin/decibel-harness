@@ -10,14 +10,17 @@ import {
   agentRuns,
   agentsPanelOpen,
   applyTheme,
+  autoCompact,
   cancel,
   COMMANDS,
   composerDraft,
+  contextUsage,
   conversation,
   engagementScope,
   findings,
   findingsOpen,
   isCommand,
+  maxSteps,
   mcpServers,
   mode,
   modelPickerOpen,
@@ -32,7 +35,9 @@ import {
   sessions,
   setAccess,
   setAgentsPanelOpen,
+  setAutoCompact,
   setEngagementScope,
+  setMaxSteps,
   setFindingsOpen,
   setMode,
   setPendingImage,
@@ -460,6 +465,29 @@ function GeneralTab() {
             ? `RoE enforced — ${scopeTargets().length} target${scopeTargets().length === 1 ? '' : 's'} in scope.`
             : 'No scope set — no RoE restriction.'}
         </div>
+      </div>
+      <div class="setting row">
+        <div>
+          <div class="field-label">Max steps per turn</div>
+          <div class="field-help">The agent's runaway backstop — how many tool steps one turn may take before it stops. Higher = deeper autonomous engagements; lower = shorter, cheaper runs. Default 40.</div>
+        </div>
+        <input
+          class="num-input"
+          type="number"
+          min={1}
+          max={200}
+          value={maxSteps()}
+          onChange={(e) => setMaxSteps(parseInt(e.currentTarget.value, 10))}
+        />
+      </div>
+      <div class="setting row">
+        <div>
+          <div class="field-label">Auto-compact the conversation</div>
+          <div class="field-help">When the model's context window passes ~80%, summarize the history and replace it automatically (same as <code>/compact</code>) so a long engagement doesn't overflow. Off by default — the transcript is only rewritten when you enable this.</div>
+        </div>
+        <button class={`switch ${autoCompact() ? 'on' : ''}`} role="switch" aria-checked={autoCompact()} onClick={() => setAutoCompact(!autoCompact())}>
+          <span class="knob" />
+        </button>
       </div>
       <div class="setting">
         <div class="field-label">Authority</div>
@@ -994,6 +1022,17 @@ function Composer() {
           ]}
         />
         <span class="spacer" />
+        <Show when={contextUsage()}>
+          {(u) => (
+            <div
+              class={`ctx-meter ${u().pct >= 85 ? 'hot' : u().pct >= 65 ? 'warm' : ''}`}
+              title={`Context: ${fmtTokens(u().used)} / ${fmtTokens(u().total)} tokens (${u().pct}%)`}
+            >
+              <span class="ctx-bar"><span class="ctx-fill" style={{ width: `${u().pct}%` }} /></span>
+              <span class="ctx-pct">{u().pct}%</span>
+            </div>
+          )}
+        </Show>
         <div class="model-anchor">
           <button class="model-chip" onClick={() => setModelPickerOpen(!modelPickerOpen())}>
             <Show when={current()} fallback={<span>select model</span>}>

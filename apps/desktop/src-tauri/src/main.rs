@@ -465,6 +465,7 @@ async fn run_prompt(
     access: String,
     scope: Option<String>,
     image: Option<String>,
+    max_steps: Option<u32>,
     session_id: String,
     run_id: u64,
     on_event: Channel<RunEvt>,
@@ -572,9 +573,9 @@ async fn run_prompt(
         config = config.with_cwd(ws);
     }
     // A real engagement takes many tool steps; the AgentConfig default (16) hits
-    // the cap mid-recon. 40 gives room while still bounding a runaway loop (and
-    // multi-turn memory means the model can be told to continue past it).
-    config.max_steps = 40;
+    // the cap mid-recon. 40 is the default (bounds a runaway loop while leaving
+    // room), but the operator can raise/lower it in Settings. Clamp to a sane band.
+    config.max_steps = max_steps.unwrap_or(40).clamp(1, 200) as u64;
     let mut blocks = vec![ContentBlock::text(prompt)];
     if let Some(img) = image.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         blocks.push(ContentBlock::image(img)); // a data: URL for a vision model

@@ -122,6 +122,29 @@ export function setEngagementScope(s: string): void {
   writePref('decibel.scope', s)
 }
 
+// Max steps per turn (the agent's runaway backstop). Default 40; the operator can
+// raise it for long engagements or lower it to keep runs short. Clamped 1–200.
+const [maxSteps, setMaxStepsSignal] = createSignal<number>(
+  Math.min(200, Math.max(1, parseInt(readPref('decibel.maxSteps', '40'), 10) || 40)),
+)
+export { maxSteps }
+export function setMaxSteps(n: number): void {
+  const v = Math.min(200, Math.max(1, Math.round(n) || 40))
+  setMaxStepsSignal(v)
+  writePref('decibel.maxSteps', String(v))
+}
+
+// Auto-compaction: when the context window passes ~80% after a turn, summarize +
+// replace the history automatically (same path as /compact). Opt-in (off by
+// default) so a long conversation is never rewritten behind the operator's back
+// unless they asked for it.
+const [autoCompact, setAutoCompactSignal] = createSignal<boolean>(readPref<string>('decibel.autoCompact', 'off') === 'on')
+export { autoCompact }
+export function setAutoCompact(on: boolean): void {
+  setAutoCompactSignal(on)
+  writePref('decibel.autoCompact', on ? 'on' : 'off')
+}
+
 // ── MCP servers (persisted config list; also synced to the backend) ──────────
 export interface McpServer {
   name: string
@@ -215,6 +238,9 @@ export const [running, setRunning] = createSignal(false)
 export const [settingsOpen, setSettingsOpen] = createSignal(false)
 // Drives the Findings drawer (a live, severity-sorted view over the transcript).
 export const [findingsOpen, setFindingsOpen] = createSignal(false)
+// Live context-usage for the composer meter — refreshed after each turn (backend
+// `session_context`); reset when the conversation changes.
+export const [contextInfo, setContextInfo] = createSignal<import('./api').ContextInfo | null>(null)
 // Drives the live Agents panel (right column). Persisted, open by default.
 const [agentsPanelOpen, setAgentsPanelOpenSignal] = createSignal(readPref<string>('decibel.agentsPanel', 'open') !== 'closed')
 export { agentsPanelOpen }
@@ -287,6 +313,7 @@ export async function openSession(id: string): Promise<void> {
     sessionId = id
     setActiveSessionId(id)
     setConversation('list', display.map(mapDisplayMsg))
+    setContextInfo(null) // meter re-estimates from the loaded transcript
     setComposerDraft('') // a draft/image prepared for the old conversation shouldn't leak
     setPendingImage('')
   } catch {
@@ -322,6 +349,7 @@ export function newSession(): void {
   sessionId = `sess-${Date.now()}-${++sessionCounter}`
   setActiveSessionId(sessionId)
   setConversation('list', [])
+  setContextInfo(null)
   setComposerDraft('')
   setPendingImage('')
   setSessionLoading(false)
@@ -353,7 +381,7 @@ export async function send(text: string): Promise<void> {
   setRunning(true)
   controller = new AbortController()
   try {
-    await runPrompt(prompt, model, provider, workspace(), mode(), access(), engagementScope(), image, sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
+    await runPrompt(prompt, model, provider, workspace(), mode(), access(), engagementScope(), image, maxSteps(), sessionId, runId, (e) => applyEvent(idx, runId, e), controller.signal)
   } finally {
     // Backstop: if runPrompt rejects (e.g. an IPC failure) rather than ending
     // with a done/error event, don't leave the spinner stuck — but only touch
@@ -550,6 +578,8 @@ function applyEvent(idx: number, runId: number, e: import('./api').RunEvent): vo
     // Defensively finalize any block still `running` at turn end (a specialist that
     // died without a `specialist_end`), so the agents ticker never runs forever.
     finalizeRunningBlocks()
+    // Refresh the composer's context meter with this turn's real prompt size.
+    void refreshContext()
     // The turn was just persisted server-side; refresh the sidebar's session list.
     if (e.type === 'done') void refreshSessions()
   }
@@ -622,6 +652,38 @@ export function agentRuns(): SpecialistRun[] {
     }
   }
   return out
+}
+
+// ── context usage (composer meter) ────────────────────────────────────────────
+/** Refresh the backend-reported context usage for the current session, then
+ * auto-compact if enabled and the window is nearly full. */
+export async function refreshContext(): Promise<void> {
+  setContextInfo(await sessionContext(sessionId).catch(() => null))
+  if (autoCompact() && !running()) {
+    const u = contextUsage()
+    if (u && u.pct >= 80) {
+      pushSystem([{ kind: 'notice', text: `Context ${u.pct}% full — auto-compacting…` }])
+      void runCompact()
+    }
+  }
+}
+/** Rough token estimate from the visible transcript (~4 chars/token) — the meter's
+ * fallback before the first turn and in the browser preview (no backend usage). */
+function estimateTokens(): number {
+  const chars = conversation.list
+    .flatMap((m) => m.blocks)
+    .reduce((n, b) => n + (b.kind === 'text' ? b.text.length : b.kind === 'tool' ? (b.output?.length ?? 0) + b.args.length : (b as { text?: string }).text?.length ?? 0), 0)
+  return Math.round(chars / 4)
+}
+/** The composer's context meter: how full the model's window is. Uses the provider-
+ * reported prompt size when available, else the transcript estimate. Null if no
+ * model / nothing yet. Reactive over `contextInfo()` and the transcript. */
+export function contextUsage(): { used: number; total: number; pct: number } | null {
+  const total = modelById(selectedModel())?.context_length ?? 0
+  if (!total) return null
+  const used = contextInfo()?.last_input_tokens ?? estimateTokens()
+  if (!used) return null
+  return { used, total, pct: Math.min(100, Math.round((used / total) * 100)) }
 }
 
 // ── slash commands ────────────────────────────────────────────────────────────

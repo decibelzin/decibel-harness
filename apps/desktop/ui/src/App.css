@@ -410,6 +410,22 @@
 .scope-input:focus {
   border-color: var(--accent);
 }
+.num-input {
+  flex-shrink: 0;
+  width: 76px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: var(--mono);
+  text-align: right;
+  outline: none;
+}
+.num-input:focus {
+  border-color: var(--accent);
+}
 
 /* ── MCP servers (Settings tab) ───────────────────────────────────────────── */
 .mcp-list {
@@ -782,6 +798,41 @@
   color: var(--warning);
   margin: 0 2px 6px;
   line-height: 1.4;
+}
+/* context-window meter (composer) */
+.ctx-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.ctx-bar {
+  width: 46px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.ctx-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.ctx-meter.warm .ctx-fill {
+  background: var(--warning);
+}
+.ctx-meter.hot .ctx-fill {
+  background: var(--danger);
+}
+.ctx-meter.warm {
+  color: var(--warning);
+}
+.ctx-meter.hot {
+  color: var(--danger);
 }
 .model-chip {
   display: inline-flex;
